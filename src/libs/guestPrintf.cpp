@@ -773,8 +773,9 @@ static int kyty_printf_internal(bool sn, char* sn_s, size_t sn_n, const char* fo
 	out(static_cast<char>(0), &buffer, idx < maxlen ? idx : maxlen - 1U, maxlen);
 
 	if (sn) {
-		int s = snprintf(sn_s, sn_n, "%s", buffer.data());
-		EXIT_NOT_IMPLEMENTED(static_cast<size_t>(s) >= sn_n);
+		if (sn_s != nullptr && sn_n > 0) {
+			(void)snprintf(sn_s, sn_n, "%s", buffer.data());
+		}
 	} else {
 		LOGF_COLOR(Log::Color::BrightMagenta, "%s", buffer.data());
 	}

@@ -701,15 +701,24 @@ int KYTY_SYSV_ABI memcmp(const void* s1, const void* s2, size_t n) {
 }
 
 int KYTY_SYSV_ABI strcmp(const char* s1, const char* s2) {
+	if (s1 == nullptr || s2 == nullptr) {
+		return (s1 == s2) ? 0 : (s1 == nullptr ? -1 : 1);
+	}
 	return ::strcmp(s1, s2);
 }
 
 int KYTY_SYSV_ABI strncmp(const char* s1, const char* s2, size_t n) {
+	if (n == 0u) {
+		return 0;
+	}
+	if (s1 == nullptr || s2 == nullptr) {
+		return (s1 == s2) ? 0 : (s1 == nullptr ? -1 : 1);
+	}
 	return ::strncmp(s1, s2, n);
 }
 
 size_t KYTY_SYSV_ABI strlen(const char* s) {
-	return ::strlen(s);
+	return s != nullptr ? ::strlen(s) : 0u;
 }
 
 char* KYTY_SYSV_ABI strcpy(char* dest, const char* src) {
@@ -725,11 +734,11 @@ char* KYTY_SYSV_ABI strcat(char* dest, const char* src) {
 }
 
 const char* KYTY_SYSV_ABI strchr(const char* s, int c) {
-	return ::strchr(s, c);
+	return s != nullptr ? ::strchr(s, c) : nullptr;
 }
 
 char* KYTY_SYSV_ABI strrchr(const char* s, int c) {
-	return const_cast<char*>(::strrchr(s, c));
+	return s != nullptr ? const_cast<char*>(::strrchr(s, c)) : nullptr;
 }
 
 char* KYTY_SYSV_ABI strstr(const char* haystack, const char* needle) {
@@ -737,6 +746,9 @@ char* KYTY_SYSV_ABI strstr(const char* haystack, const char* needle) {
 	if (log_count++ < 8) {
 		LOGF("LibcInternal::strstr(\"%s\", \"%s\")\n", (haystack != nullptr ? haystack : "<null>"),
 		     (needle != nullptr ? needle : "<null>"));
+	}
+	if (haystack == nullptr || needle == nullptr) {
+		return nullptr;
 	}
 	return const_cast<char*>(::strstr(haystack, needle));
 }
@@ -1196,6 +1208,88 @@ static KYTY_SYSV_ABI int hle_libc_stub_zero() {
 	return 0;
 }
 
+static KYTY_SYSV_ABI int hle_mbtowc(wchar_t* pwc, const char* s, size_t n) {
+	return std::mbtowc(pwc, s, n);
+}
+
+static KYTY_SYSV_ABI size_t hle_strlcpy(char* dst, const char* src, size_t size) {
+	if (src == nullptr) {
+		return 0u;
+	}
+	const size_t srclen = std::strlen(src);
+	if (dst != nullptr && size > 0u) {
+		const size_t copy = std::min<size_t>(srclen, size - 1u);
+		std::memcpy(dst, src, copy);
+		dst[copy] = '\0';
+	}
+	return srclen;
+}
+
+static KYTY_SYSV_ABI size_t hle_strlcat(char* dst, const char* src, size_t size) {
+	if (dst == nullptr || src == nullptr) {
+		return 0u;
+	}
+	const size_t dlen = ::strnlen(dst, size);
+	const size_t slen = std::strlen(src);
+	if (dlen == size) {
+		return size + slen;
+	}
+	const size_t copy = std::min<size_t>(slen, size - dlen - 1u);
+	std::memcpy(dst + dlen, src, copy);
+	dst[dlen + copy] = '\0';
+	return dlen + slen;
+}
+
+static KYTY_SYSV_ABI int hle_strcasecmp(const char* s1, const char* s2) {
+	if (s1 == nullptr || s2 == nullptr) {
+		return (s1 == s2) ? 0 : (s1 == nullptr ? -1 : 1);
+	}
+	while (*s1 != '\0' && *s2 != '\0') {
+		const int a = std::tolower(static_cast<unsigned char>(*s1++));
+		const int b = std::tolower(static_cast<unsigned char>(*s2++));
+		if (a != b) {
+			return a - b;
+		}
+	}
+	return std::tolower(static_cast<unsigned char>(*s1)) -
+	       std::tolower(static_cast<unsigned char>(*s2));
+}
+
+static KYTY_SYSV_ABI int hle_remove(const char* path) {
+	if (path == nullptr || path[0] == '\0') {
+		*Posix::GetErrorAddr() = Posix::POSIX_ENOENT;
+		return -1;
+	}
+	const auto      real = LibKernel::FileSystem::GetRealFilename(path);
+	std::error_code ec;
+	if (std::filesystem::remove(real, ec)) {
+		return 0;
+	}
+	*Posix::GetErrorAddr() = Posix::POSIX_ENOENT;
+	return -1;
+}
+
+static KYTY_SYSV_ABI int hle_fprintf(VA_ARGS) {
+	VA_CONTEXT(ctx); // NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init)
+	auto*       stream = VaArg_ptr<std::FILE>(&ctx.va_list);
+	const char* format = VaArg_ptr<const char>(&ctx.va_list);
+	if (format == nullptr) {
+		return -1;
+	}
+	char      buf[4096];
+	const int len = GetGuestVsnprintfFunc()(buf, sizeof(buf), format, &ctx.va_list);
+	if (len <= 0) {
+		return len;
+	}
+	const size_t to_write = std::min<size_t>(static_cast<size_t>(len), sizeof(buf) - 1u);
+	if (stream != nullptr && stream != stdout && stream != stderr) {
+		(void)std::fwrite(buf, 1u, to_write, stream);
+	} else {
+		LOGF("%.*s", static_cast<int>(to_write), buf);
+	}
+	return len;
+}
+
 LIB_DEFINE(InitLibcInternal_1) {
 	LibcInternalExt::InitLibcInternalExt_1(s);
 
@@ -1277,6 +1371,13 @@ LIB_DEFINE(InitLibcInternal_1) {
 	LIB_FUNC("C6gWCWJKM+U", LibcInternal::hle_lroundf);
 	LIB_FUNC("Q2V+iqvjgC0", LibcInternal::hle_vsnprintf);
 	LIB_FUNC("QMFyLoqNxIg", LibcInternal::hle_libc_stub_zero);
+	LIB_FUNC("6eU9xX9oEdQ", LibcInternal::hle_mbtowc);
+	LIB_FUNC("SfQIZcqvvms", LibcInternal::hle_strlcpy);
+	LIB_FUNC("ByfjUZsWiyg", LibcInternal::hle_strlcat);
+	LIB_FUNC("AV6ipCNa4Rw", LibcInternal::hle_strcasecmp);
+	LIB_FUNC("MZO7FXyAPU8", LibcInternal::hle_remove);
+	LIB_FUNC("fffwELXNVFA", LibcInternal::hle_fprintf);
+	LIB_FUNC("7Psx1DlAyE4", LibcInternal::hle_libc_stub_zero);
 
 	LIB_FUNC("L1SBTkC+Cvw", LibC::abort);
 	LIB_FUNC("tsvEmnenz48", LibC::cxa_atexit);

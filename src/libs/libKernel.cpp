@@ -1988,6 +1988,27 @@ uint32_t KYTY_SYSV_ABI getgid() {
 	return 1000u;
 }
 
+uint32_t KYTY_SYSV_ABI geteuid() {
+	PRINT_NAME();
+	return 1000u;
+}
+
+int KYTY_SYSV_ABI seteuid(uint32_t /*euid*/) {
+	PRINT_NAME();
+	return 0;
+}
+
+int KYTY_SYSV_ABI access(const char* path, int /*mode*/) {
+	PRINT_NAME();
+	LibKernel::FileSystem::FileStat sb {};
+	return POSIX_CALL(LibKernel::FileSystem::KernelStat(path, &sb));
+}
+
+int KYTY_SYSV_ABI fchmod(int /*fd*/, uint16_t /*mode*/) {
+	PRINT_NAME();
+	return 0;
+}
+
 int64_t KYTY_SYSV_ABI sysconf(int name) {
 	PRINT_NAME();
 	switch (name) {
@@ -3701,6 +3722,10 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("NN01qLRhiqU", Posix::rename);
 	LIB_FUNC("kg4x8Prhfxw", Posix::getuid);
 	LIB_FUNC("AfuS23bX6kg", Posix::getgid);
+	LIB_FUNC("tvpHe5kBO4E", Posix::geteuid);
+	LIB_FUNC("HTxb6gmexa0", Posix::seteuid);
+	LIB_FUNC("8vE6Z6VEYyk", Posix::access);
+	LIB_FUNC("n01yNbQO5W4", Posix::fchmod);
 	LIB_FUNC("mkawd0NA9ts", Posix::sysconf);
 	LIB_FUNC("DFmMT80xcNI", Posix::sysctl);
 	LIB_FUNC("KiJEPEWRyUY", Posix::sigaction);

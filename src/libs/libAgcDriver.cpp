@@ -15,6 +15,7 @@ LIB_DEFINE(InitAgcDriver_1) {
 	PRINT_NAME_ENABLE(true);
 
 	LIB_FUNC("23LRUSvYu1M", Gen5::AgcInit);
+	LIB_FUNC("kW3GLb7QfPg", Gen5::AgcInit); // sceAgcInit (Agc_v0.1)
 	LIB_FUNC("2JtWUUiYBXs", Gen5::AgcGetRegisterDefaults2);
 	LIB_FUNC("wRbq6ZjNop4", Gen5::AgcGetRegisterDefaults2Internal);
 	LIB_FUNC("f3dg2CSgRKY", Gen5::AgcCreateShader);
