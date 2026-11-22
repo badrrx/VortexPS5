@@ -1109,7 +1109,7 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				    ctx, offset_value, candidate.dimension, sample_operands[0]);
 			}
 			// MinLod follows the offset in operand order.
-			if (min_lod != 0) {
+			if (min_lod != 0 && state.profile.shader_resource_min_lod) {
 				state.builder.RequireCapability(spv::CapabilityMinLod);
 				sample_operand_count = std::max(size_t{1}, sample_operand_count);
 				sample_operands[0] |= spv::ImageOperandsMinLodMask;

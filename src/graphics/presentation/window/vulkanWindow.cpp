@@ -56,7 +56,6 @@ vk::PhysicalDeviceVulkan11Features WindowContext::RequiredVulkan11Features() noe
 vk::PhysicalDeviceVulkan12Features WindowContext::RequiredVulkan12Features() noexcept {
 	return {.samplerMirrorClampToEdge                     = VK_TRUE,
 	        .storageBuffer8BitAccess                      = VK_TRUE,
-	        .shaderBufferInt64Atomics                     = VK_TRUE,
 	        .shaderSampledImageArrayNonUniformIndexing    = VK_TRUE,
 	        .shaderStorageBufferArrayNonUniformIndexing   = VK_TRUE,
 	        .shaderStorageImageArrayNonUniformIndexing    = VK_TRUE,
@@ -237,7 +236,10 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_feature(features12.shaderOutputLayer, "shaderOutputLayer");
 		check_feature(features12.shaderOutputViewportIndex, "shaderOutputViewportIndex");
 		check_feature(features12.bufferDeviceAddress, "bufferDeviceAddress");
-		check_feature(features12.shaderBufferInt64Atomics, "shaderBufferInt64Atomics");
+		if (features12.shaderBufferInt64Atomics != VK_TRUE) {
+			LOGF("shaderBufferInt64Atomics is not supported on %s (continuing with optional fallback)\n",
+			     device_properties.deviceName.data());
+		}
 		check_feature(features12.shaderSampledImageArrayNonUniformIndexing,
 		              "shaderSampledImageArrayNonUniformIndexing");
 		check_feature(features12.shaderStorageImageArrayNonUniformIndexing,
@@ -278,7 +280,10 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 
 		check_feature(device_features2.features.shaderImageGatherExtended,
 		              "shaderImageGatherExtended");
-		check_feature(device_features2.features.shaderResourceMinLod, "shaderResourceMinLod");
+		if (device_features2.features.shaderResourceMinLod != VK_TRUE) {
+			LOGF("shaderResourceMinLod is not supported on %s (continuing with optional fallback)\n",
+			     device_properties.deviceName.data());
+		}
 
 		check_feature(device_features2.features.independentBlend, "independentBlend");
 		check_feature(device_features2.features.tessellationShader, "tessellationShader");
@@ -502,12 +507,22 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 		    "WARNING: Your GPU is not fully supported (fragmentShaderBarycentric is unavailable). "
 		    "Some games may render incorrectly or crash.\n");
 	}
-	graphics.shader_image_int64_atomics_enabled = image_atomic_int64.shaderImageInt64Atomics;
-	graphics.sampler_filter_minmax_enabled      = supported12.samplerFilterMinmax;
+	graphics.shader_buffer_int64_atomics_enabled = supported12.shaderBufferInt64Atomics == VK_TRUE;
+	graphics.shader_resource_min_lod_enabled     = supported2.features.shaderResourceMinLod == VK_TRUE;
+	graphics.shader_image_int64_atomics_enabled  = image_atomic_int64.shaderImageInt64Atomics;
+	graphics.sampler_filter_minmax_enabled       = supported12.samplerFilterMinmax;
 
 	auto features12                     = WindowContext::RequiredVulkan12Features();
+	features12.shaderBufferInt64Atomics = supported12.shaderBufferInt64Atomics;
 	features12.shaderSharedInt64Atomics = supported12.shaderSharedInt64Atomics;
 	features12.samplerFilterMinmax      = supported12.samplerFilterMinmax;
+	if (!graphics.shader_buffer_int64_atomics_enabled || !graphics.shader_resource_min_lod_enabled) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "WARNING: Optional GPU features unavailable: shaderBufferInt64Atomics={}, "
+		    "shaderResourceMinLod={}. Continuing with fallback path.\n",
+		    graphics.shader_buffer_int64_atomics_enabled,
+		    graphics.shader_resource_min_lod_enabled));
+	}
 	if (!features12.shaderSharedInt64Atomics || !workgroup_layout.workgroupMemoryExplicitLayout) {
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "WARNING: Native 64-bit LDS atomics are unavailable: shaderSharedInt64Atomics={}, "
@@ -618,7 +633,7 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	device_features.shaderStorageImageMultisample =
 	    supported2.features.shaderStorageImageMultisample;
 	device_features.shaderImageGatherExtended            = VK_TRUE;
-	device_features.shaderResourceMinLod                 = VK_TRUE;
+	device_features.shaderResourceMinLod                 = supported2.features.shaderResourceMinLod;
 	device_features.independentBlend                     = VK_TRUE;
 	device_features.dualSrcBlend                         = VK_TRUE;
 	device_features.tessellationShader                   = VK_TRUE;

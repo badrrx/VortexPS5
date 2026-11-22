@@ -268,8 +268,10 @@ ShaderRecompiler::Spirv::Profile SpirvProfile(const GraphicContext& graphics) {
 	        .robust_buffer_access   = graphics.robust_buffer_access_enabled,
 	        .r8_srgb_views          = graphics.r8_srgb_views,
 	        .r8g8_srgb_views        = graphics.r8g8_srgb_views,
-	        .relaxed_float          = Config::RelaxedShaderFloatEnabled(),
-	        .ray_query              = graphics.ray_query_enabled};
+	        .relaxed_float               = Config::RelaxedShaderFloatEnabled(),
+	        .ray_query                   = graphics.ray_query_enabled,
+	        .shader_resource_min_lod     = graphics.shader_resource_min_lod_enabled,
+	        .shader_buffer_int64_atomics = graphics.shader_buffer_int64_atomics_enabled};
 }
 
 std::filesystem::path ShaderStorePath() {

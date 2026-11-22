@@ -24,6 +24,9 @@ struct Profile {
 	bool relaxed_float = false;
 	// Ray queries: recognized traversal loops trace the dispatch's host TLAS.
 	bool ray_query = false;
+	// Optional host GPU features (default true for unit tests / discrete GPUs).
+	bool shader_resource_min_lod     = true;
+	bool shader_buffer_int64_atomics = true;
 };
 
 inline constexpr Profile DefaultProfile {};

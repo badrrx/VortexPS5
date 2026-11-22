@@ -96,8 +96,21 @@ static void MountSandboxDirs() {
 	MountOrCreateDir("_TempData/" + title_id, "/temp");
 }
 
+static std::string ResolveTitleId() {
+	std::string title_id;
+	Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id);
+	if (title_id.empty()) {
+		std::string content_id;
+		if (Loader::SystemContentParamSfoGetString("CONTENT_ID", &content_id) &&
+		    content_id.size() == 36 && content_id[6] == '-' && content_id[16] == '_') {
+			title_id = content_id.substr(7, 9);
+		}
+	}
+	return title_id;
+}
+
 static void Init(const Config::ConfigOptions& cfg, const std::filesystem::path& param_json,
-                 Common::Subsystems& subsystems) {
+                 const std::filesystem::path& elf_path, Common::Subsystems& subsystems) {
 	EXIT_IF(!Common::Thread::IsMainThread());
 
 	subsystems.Initialize<Config::Lifecycle>();
@@ -107,6 +120,9 @@ static void Init(const Config::ConfigOptions& cfg, const std::filesystem::path& 
 	if (Common::File::IsFileExisting(param_json)) {
 		Loader::SystemContentLoadParamSfo(param_json);
 	}
+	const std::string title_id = ResolveTitleId();
+	Common::BootTelemetry::Global().BeginSession(title_id.empty() ? "UNKNOWN" : title_id,
+	                                             Common::PathToGenericString(elf_path));
 	if (cfg.splash_enabled) {
 		Libs::Graphics::InitializeSplashScreen(param_json.parent_path());
 	}
@@ -158,23 +174,13 @@ void Run(const RunOptions& options) {
 
 	const auto         param_json = options.app0_dir / "sce_sys" / "param.json";
 	Common::Subsystems subsystems(true);
-	Init(options.config, param_json, subsystems);
+	Init(options.config, param_json, options.elf, subsystems);
 
 	PrintSystemInfo();
-	std::string title_id;
-	Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id);
-	if (title_id.empty()) {
-		std::string content_id;
-		if (Loader::SystemContentParamSfoGetString("CONTENT_ID", &content_id) &&
-		    content_id.size() == 36 && content_id[6] == '-' && content_id[16] == '_') {
-			title_id = content_id.substr(7, 9);
-		}
-	}
+	const std::string title_id = ResolveTitleId();
 	if (!title_id.empty()) {
 		Log::WriteToConsoleAndLog(fmt::format("Title ID: {}\n", title_id));
 	}
-	Common::BootTelemetry::Global().BeginSession(title_id.empty() ? "UNKNOWN" : title_id,
-	                                             Common::PathToGenericString(options.elf));
 
 	int ok = atexit(KytyClose);
 	EXIT_NOT_IMPLEMENTED(ok != 0);
