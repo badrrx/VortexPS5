@@ -5,6 +5,7 @@
 #include "common/singleton.h"
 #include "common/stringUtils.h"
 #include "graphics/host_gpu/hostMemory.h"
+#include "kernel/fileSystem.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/guestPrintf.h"
@@ -305,6 +306,37 @@ static KYTY_SYSV_ABI int puts(const char* s) {
 	return GetGuestPrintfStdFunc()("%s\n", s);
 }
 
+static std::mutex                                   g_env_mutex;
+static std::unordered_map<std::string, std::string> g_guest_env;
+
+static KYTY_SYSV_ABI char* getenv(const char* name) {
+	PRINT_NAME();
+
+	if (name == nullptr || name[0] == '\0') {
+		return nullptr;
+	}
+
+	std::scoped_lock lock(g_env_mutex);
+	auto             it = g_guest_env.find(name);
+	if (it == g_guest_env.end()) {
+		return nullptr;
+	}
+	return it->second.data();
+}
+
+static KYTY_SYSV_ABI int unsetenv(const char* name) {
+	PRINT_NAME();
+
+	if (name == nullptr || name[0] == '\0' || std::strchr(name, '=') != nullptr) {
+		*Posix::GetErrorAddr() = Posix::POSIX_EINVAL;
+		return -1;
+	}
+
+	std::scoped_lock lock(g_env_mutex);
+	g_guest_env.erase(name);
+	return 0;
+}
+
 static KYTY_SYSV_ABI int setenv(const char* name, const char* value, int overwrite) {
 	PRINT_NAME();
 
@@ -319,7 +351,11 @@ static KYTY_SYSV_ABI int setenv(const char* name, const char* value, int overwri
 		return -1;
 	}
 
-	// Guest environment changes must not leak into emulator host libraries.
+	// Store in isolated guest environment map (never leak into host process environment).
+	std::scoped_lock lock(g_env_mutex);
+	if (overwrite != 0 || !g_guest_env.contains(name)) {
+		g_guest_env[name] = value;
+	}
 	return 0;
 }
 
@@ -764,6 +800,111 @@ int KYTY_SYSV_ABI LibcHeapErrorReportForGame(uint64_t msp, uint64_t ptr, uint64_
 	return 0;
 }
 
+struct GuestDirent {
+	uint32_t d_fileno;
+	uint16_t d_reclen;
+	uint8_t  d_type;
+	uint8_t  d_namlen;
+	char     d_name[256];
+};
+
+struct GuestDirStream {
+	std::vector<std::pair<std::string, uint8_t>> entries;
+	size_t                                       index = 0;
+	GuestDirent                                  current {};
+};
+
+static KYTY_SYSV_ABI int gethostname(char* name, size_t namelen) {
+	PRINT_NAME();
+	if (name == nullptr || namelen == 0) {
+		*Posix::GetErrorAddr() = Posix::POSIX_EINVAL;
+		return -1;
+	}
+	static constexpr const char* kHostName = "ps5-vortex";
+	std::strncpy(name, kHostName, namelen - 1);
+	name[namelen - 1] = '\0';
+	return 0;
+}
+
+static KYTY_SYSV_ABI char* realpath(const char* path, char* resolved_path) {
+	PRINT_NAME();
+	if (path == nullptr) {
+		*Posix::GetErrorAddr() = Posix::POSIX_EINVAL;
+		return nullptr;
+	}
+	char* out = resolved_path;
+	if (out == nullptr) {
+		out = static_cast<char*>(std::malloc(1024));
+		if (out == nullptr) {
+			return nullptr;
+		}
+	}
+	std::strncpy(out, path, 1023);
+	out[1023] = '\0';
+	return out;
+}
+
+static KYTY_SYSV_ABI void* opendir(const char* name) {
+	PRINT_NAME();
+	if (name == nullptr || name[0] == '\0') {
+		*Posix::GetErrorAddr() = Posix::POSIX_ENOENT;
+		return nullptr;
+	}
+	const auto real_path = LibKernel::FileSystem::GetRealFilename(name);
+	std::error_code ec;
+	if (!std::filesystem::exists(real_path, ec) || !std::filesystem::is_directory(real_path, ec)) {
+		*Posix::GetErrorAddr() = Posix::POSIX_ENOENT;
+		return nullptr;
+	}
+	auto* dir = new GuestDirStream();
+	for (const auto& entry: std::filesystem::directory_iterator(real_path, ec)) {
+		if (ec) {
+			break;
+		}
+		const auto fname = entry.path().filename().string();
+		const uint8_t dtype = entry.is_directory(ec) ? 4u : 8u; // DT_DIR=4, DT_REG=8
+		dir->entries.emplace_back(fname, dtype);
+	}
+	return dir;
+}
+
+static KYTY_SYSV_ABI GuestDirent* readdir(void* dirp) {
+	PRINT_NAME();
+	if (dirp == nullptr) {
+		return nullptr;
+	}
+	auto* dir = static_cast<GuestDirStream*>(dirp);
+	if (dir->index >= dir->entries.size()) {
+		return nullptr;
+	}
+	const auto& [name, dtype] = dir->entries[dir->index++];
+	dir->current              = {};
+	dir->current.d_fileno     = static_cast<uint32_t>(dir->index);
+	dir->current.d_reclen     = sizeof(GuestDirent);
+	dir->current.d_type       = dtype;
+	const size_t copy_len     = std::min<size_t>(name.size(), sizeof(dir->current.d_name) - 1);
+	dir->current.d_namlen     = static_cast<uint8_t>(copy_len);
+	std::memcpy(dir->current.d_name, name.data(), copy_len);
+	dir->current.d_name[copy_len] = '\0';
+	return &dir->current;
+}
+
+[[maybe_unused]] static KYTY_SYSV_ABI int closedir(void* dirp) {
+	PRINT_NAME();
+	if (dirp != nullptr) {
+		delete static_cast<GuestDirStream*>(dirp);
+	}
+	return 0;
+}
+
+static KYTY_SYSV_ABI int getifaddrs(void** ifap) {
+	PRINT_NAME();
+	if (ifap != nullptr) {
+		*ifap = nullptr;
+	}
+	return 0;
+}
+
 LIB_DEFINE(InitLibcInternal_1) {
 	LibcInternalExt::InitLibcInternalExt_1(s);
 
@@ -797,6 +938,14 @@ LIB_DEFINE(InitLibcInternal_1) {
 	LIB_FUNC("jMB7EFyu30Y", LibcInternal::sincos);
 	LIB_FUNC("eLdDw6l0-bU", LibcInternal::snprintf);
 
+	LIB_FUNC("smbQukfxYJM", LibC::getenv);
+	LIB_FUNC("CRJcH8CnPSI", LibC::unsetenv);
+	LIB_FUNC("-nvxBWa0iDs", LibcInternal::gethostname);
+	LIB_FUNC("vhtcIgZG-Lk", LibcInternal::realpath);
+	LIB_FUNC("ay3uROQAc5A", LibcInternal::opendir);
+	LIB_FUNC("lybyyKtP54c", LibcInternal::readdir);
+	LIB_FUNC("j-gWL6wDros", LibcInternal::getifaddrs);
+
 	LIB_FUNC("L1SBTkC+Cvw", LibC::abort);
 	LIB_FUNC("tsvEmnenz48", LibC::cxa_atexit);
 	LIB_FUNC("H2e8t5ScQGc", LibC::cxa_finalize);
@@ -821,7 +970,9 @@ LIB_DEFINE(InitLibC_1) {
 	LIB_FUNC("8G2LB+A3rzg", LibC::atexit);
 	LIB_FUNC("hcuQgD53UxM", LibC::libc_printf);
 	LIB_FUNC("YQ0navp+YIc", LibC::puts);
+	LIB_FUNC("smbQukfxYJM", LibC::getenv);
 	LIB_FUNC("M4YYbSFfJ8g", LibC::setenv);
+	LIB_FUNC("CRJcH8CnPSI", LibC::unsetenv);
 	LIB_FUNC("wLlFkwG9UcQ", LibC::libc_time);
 	LIB_FUNC("-VVn74ZyhEs", LibC::libc_difftime);
 	LIB_FUNC("1mecP7RgI2A", LibC::libc_gmtime);

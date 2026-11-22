@@ -61,6 +61,12 @@ const SymbolRecord* SymbolDatabase::Find(const SymbolResolve& s) const {
 	const auto key = GenerateName(s);
 	std::shared_lock lock(m_mutex);
 	auto it = m_map.find(key);
+	if (it == m_map.end() && s.module_version_major == 0) {
+		// Allow PS5 SYS_V0 (*_v0.1) imports to fall back cleanly to *_v1.1 HLE implementations.
+		SymbolResolve v1        = s;
+		v1.module_version_major = 1;
+		it                      = m_map.find(GenerateName(v1));
+	}
 	if (it == m_map.end()) {
 		return nullptr;
 	}

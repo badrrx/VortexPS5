@@ -295,6 +295,7 @@ LIB_DEFINE(InitUserService_1) {
 	LIB_FUNC("j3YMu1MVNNo", UserService::UserServiceInitialize);
 	LIB_FUNC("az-0R6eviZ0", UserService::UserServiceInitialize2);
 	LIB_FUNC("CdWp0oHWGr0", UserService::UserServiceGetInitialUser);
+	LIB_FUNC("eNb53LQJmIM", UserService::UserServiceGetInitialUser); // sceUserServiceGetForegroundUser
 	LIB_FUNC("yH17Q6NWtVg", UserService::UserServiceGetEvent);
 	LIB_FUNC("fPhymKNvK-A", UserService::UserServiceGetLoginUserIdList);
 	LIB_FUNC("1xxcMiGu2fo", UserService::UserServiceGetUserName);

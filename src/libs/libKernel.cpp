@@ -1972,6 +1972,139 @@ int KYTY_SYSV_ABI rmdir(const char* path) {
 	return POSIX_CALL(LibKernel::FileSystem::KernelRmdir(path));
 }
 
+int KYTY_SYSV_ABI rename(const char* from, const char* to) {
+	PRINT_NAME();
+
+	return POSIX_CALL(LibKernel::FileSystem::KernelRename(from, to));
+}
+
+uint32_t KYTY_SYSV_ABI getuid() {
+	PRINT_NAME();
+	return 1000u;
+}
+
+uint32_t KYTY_SYSV_ABI getgid() {
+	PRINT_NAME();
+	return 1000u;
+}
+
+int64_t KYTY_SYSV_ABI sysconf(int name) {
+	PRINT_NAME();
+	switch (name) {
+		case 47: return 16384; // _SC_PAGESIZE (PS5 16 KiB)
+		case 58: return 8;     // _SC_NPROCESSORS_ONLN
+		case 57: return 8;     // _SC_NPROCESSORS_CONF
+		case 2: return 1000;   // _SC_CLK_TCK
+		default: return -1;
+	}
+}
+
+int KYTY_SYSV_ABI sysctl(const int* /*name*/, uint32_t /*namelen*/, void* /*oldp*/,
+                         size_t* oldlenp, const void* /*newp*/, size_t /*newlen*/) {
+	PRINT_NAME();
+	if (oldlenp != nullptr) {
+		*oldlenp = 0;
+	}
+	return 0;
+}
+
+int KYTY_SYSV_ABI sigaction(int /*sig*/, const void* /*act*/, void* /*oact*/) {
+	PRINT_NAME();
+	return 0;
+}
+
+void* KYTY_SYSV_ABI signal(int /*sig*/, void* /*func*/) {
+	PRINT_NAME();
+	return nullptr;
+}
+
+int KYTY_SYSV_ABI sigemptyset(void* set) {
+	PRINT_NAME();
+	if (set != nullptr) {
+		std::memset(set, 0, 16);
+	}
+	return 0;
+}
+
+int KYTY_SYSV_ABI poll(void* /*fds*/, uint64_t /*nfds*/, int /*timeout*/) {
+	PRINT_NAME();
+	return 0;
+}
+
+int KYTY_SYSV_ABI ioctl(int /*d*/, uint64_t /*request*/, void* /*argp*/) {
+	PRINT_NAME();
+	*GetErrorAddr() = POSIX_ENOSYS;
+	return -1;
+}
+
+struct GuestIovec {
+	void*  iov_base;
+	size_t iov_len;
+};
+
+int64_t KYTY_SYSV_ABI readv(int d, const GuestIovec* iov, int iovcnt) {
+	PRINT_NAME();
+	if (iov == nullptr || iovcnt < 0) {
+		*GetErrorAddr() = POSIX_EINVAL;
+		return -1;
+	}
+	int64_t total = 0;
+	for (int i = 0; i < iovcnt; ++i) {
+		if (iov[i].iov_len == 0) {
+			continue;
+		}
+		const int64_t r = LibKernel::FileSystem::KernelRead(d, iov[i].iov_base, iov[i].iov_len);
+		if (r < 0) {
+			if (total > 0) {
+				return total;
+			}
+			*GetErrorAddr() = LibKernel::KernelToPosix(static_cast<int>(r));
+			return -1;
+		}
+		total += r;
+		if (static_cast<size_t>(r) < iov[i].iov_len) {
+			break;
+		}
+	}
+	return total;
+}
+
+int64_t KYTY_SYSV_ABI writev(int d, const GuestIovec* iov, int iovcnt) {
+	PRINT_NAME();
+	if (iov == nullptr || iovcnt < 0) {
+		*GetErrorAddr() = POSIX_EINVAL;
+		return -1;
+	}
+	int64_t total = 0;
+	for (int i = 0; i < iovcnt; ++i) {
+		if (iov[i].iov_len == 0) {
+			continue;
+		}
+		const int64_t w = LibKernel::FileSystem::KernelWrite(d, iov[i].iov_base, iov[i].iov_len);
+		if (w < 0) {
+			if (total > 0) {
+				return total;
+			}
+			*GetErrorAddr() = LibKernel::KernelToPosix(static_cast<int>(w));
+			return -1;
+		}
+		total += w;
+	}
+	return total;
+}
+
+int KYTY_SYSV_ABI dup2(int /*oldd*/, int newd) {
+	PRINT_NAME();
+	return newd;
+}
+
+int KYTY_SYSV_ABI KernelSendNotificationRequest(int /*device*/, const void* /*req*/,
+                                                size_t /*size*/, int /*blocking*/) {
+	PRINT_NAME();
+	LOGF("sceKernelSendNotificationRequest: acknowledged\n");
+	return 0;
+}
+
 int64_t KYTY_SYSV_ABI lseek(int d, int64_t offset, int whence) {
 	PRINT_NAME();
 
@@ -3554,6 +3687,25 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("B2n8aDorSH4", Posix::KernelSyncOnAddressWait32);
 	LIB_FUNC("PZQhiiLXRFs", Posix::KernelSyncOnAddressWait64);
 	LIB_FUNC("q2y-wDIVWZA", Posix::KernelSyncOnAddressWake);
+
+	// PS5 SYS_V0 / POSIX compatibility NIDs (homebrew & SDK v0.1 imports)
+	LIB_FUNC("DRGXpDDh8Ng", Posix::stat); // lstat
+	LIB_FUNC("NN01qLRhiqU", Posix::rename);
+	LIB_FUNC("kg4x8Prhfxw", Posix::getuid);
+	LIB_FUNC("AfuS23bX6kg", Posix::getgid);
+	LIB_FUNC("mkawd0NA9ts", Posix::sysconf);
+	LIB_FUNC("DFmMT80xcNI", Posix::sysctl);
+	LIB_FUNC("KiJEPEWRyUY", Posix::sigaction);
+	LIB_FUNC("VADc3MNQ3cM", Posix::signal);
+	LIB_FUNC("+F7C-hdk7+E", Posix::sigemptyset);
+	LIB_FUNC("ku7D4q1Y9PI", Posix::poll);
+	LIB_FUNC("PfccT7qURYE", Posix::ioctl);
+	LIB_FUNC("I7ImcLds-uU", Posix::readv);
+	LIB_FUNC("Z2aKdxzS4KE", Posix::writev);
+	LIB_FUNC("wdUufa9g-D8", Posix::dup2);
+	LIB_FUNC("4pYihoPggn8", Posix::inet_ntop);
+	LIB_FUNC("fyPeCKJ94Hg", Posix::inet_pton);
+	LIB_FUNC("zl7hupSO0C0", Posix::KernelSendNotificationRequest);
 
 	AddLibkernelUnityFunc(s, "Qhv5ARAoOEc",
 	                      reinterpret_cast<uint64_t>(LibKernel::KernelRemoveExceptionHandler),
