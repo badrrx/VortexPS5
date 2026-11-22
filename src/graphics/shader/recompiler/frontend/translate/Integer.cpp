@@ -30,6 +30,14 @@ void Translator::Integer16Mad(const Decoder::Instruction& inst, bool sign) {
 	Write16Bits(DestinationOperand(inst), result);
 }
 
+void Translator::Integer32From16Mad(const Decoder::Instruction& inst, bool sign) {
+	const auto lhs    = ReadU16AsU32(inst.src0, sign);
+	const auto rhs    = ReadU16AsU32(inst.src1, sign);
+	const auto acc    = ReadU32(inst.src2);
+	const auto result = ir.IAdd(ir.IMul(lhs, rhs), acc);
+	WriteOperand(DestinationOperand(inst), result);
+}
+
 void Translator::Integer16Ternary(const Decoder::Instruction& inst, IR::ValueOpcode opcode,
                                   bool sign) {
 	const auto result = IR::U32(ir.Emit(

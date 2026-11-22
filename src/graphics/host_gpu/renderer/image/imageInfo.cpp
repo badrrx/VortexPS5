@@ -95,6 +95,7 @@ void ImageInfo::UpdateSize() {
 	if (samples > 1) {
 		EXIT_NOT_IMPLEMENTED(IsVolume() || resources.levels != 1 ||
 		                     (tile_mode != Prospero::TileMode::kDepth &&
+		                      tile_mode != Prospero::TileMode::kDisplay64KB &&
 		                      tile_mode != Prospero::TileMode::kRenderTarget));
 		const auto fragments = std::countr_zero(samples);
 		if (pitch == 0) {

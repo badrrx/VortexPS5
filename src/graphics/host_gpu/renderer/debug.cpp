@@ -136,6 +136,7 @@ static bool RenderIsColorTileMode(Prospero::TileMode tile_mode) {
 		case Prospero::TileMode::kStandard4KB:
 		case Prospero::TileMode::kStandard64KB:
 		case Prospero::TileMode::kPrt:
+		case Prospero::TileMode::kDisplay64KB:
 		case Prospero::TileMode::kDepth:
 		case Prospero::TileMode::kRenderTarget: return true;
 		default: return false;

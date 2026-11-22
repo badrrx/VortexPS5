@@ -136,6 +136,7 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 		case Prospero::TileMode::kStandard64KB:
 		case Prospero::TileMode::kDepth: texture_tile = true; break;
 		case Prospero::TileMode::kLinear:
+		case Prospero::TileMode::kDisplay64KB:
 		case Prospero::TileMode::kRenderTarget: break;
 		default: EXIT("unknown tile mode: %u\n", static_cast<uint32_t>(rt.attrib3.tile_mode));
 	}
@@ -205,7 +206,9 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	desc.info.bytes_per_block = bytes_per_element;
 	desc.info.samples         = samples;
 	desc.info.tile_mode       = rt.attrib3.tile_mode;
-	if (!volume && rt.attrib3.tile_mode == Prospero::TileMode::kRenderTarget &&
+	if (!volume &&
+	    (rt.attrib3.tile_mode == Prospero::TileMode::kRenderTarget ||
+	     rt.attrib3.tile_mode == Prospero::TileMode::kDisplay64KB) &&
 	    levels > std::bit_width(std::max(width, height))) {
 		EXIT("unsupported render-target mip count\n");
 	}

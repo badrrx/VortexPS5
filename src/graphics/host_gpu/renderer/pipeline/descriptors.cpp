@@ -341,6 +341,7 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 			supported_tile =
 			    TileGetTextureBlockLayout(descriptor.Format(), tile, is_3d, tile_layout);
 			break;
+		case Prospero::TileMode::kDisplay64KB:
 		case Prospero::TileMode::kRenderTarget:
 			supported_tile =
 			    TileGetTextureBlockLayout(descriptor.Format(), tile, false, tile_layout);
@@ -591,7 +592,8 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	    multisampled ? 1u : std::max(physical_levels, base_level + view_levels);
 	const auto tile       = descriptor.TileMode();
 	const bool depth_tile = tile == Prospero::TileMode::kDepth;
-	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget;
+	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget ||
+	                        tile == Prospero::TileMode::kDisplay64KB;
 	const bool msaa_array = type == Prospero::ImageType::kColor2DMsaaArray;
 	if ((!multisampled && base_level > last_level) ||
 	    (multisampled &&

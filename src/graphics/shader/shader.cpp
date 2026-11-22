@@ -10,6 +10,7 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/hardwareContext.h"
+#include "graphics/host_gpu/hostMemory.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
@@ -92,10 +93,56 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	EXIT_IF(g_shader_map == nullptr);
 
-	std::scoped_lock lock(g_shader_map_mutex);
+	{
+		std::scoped_lock lock(g_shader_map_mutex);
+		if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end()) {
+			return iter->second;
+		}
+	}
 
-	if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end()) {
-		return iter->second;
+	// Raw RDNA 2 shader fallback: homebrew and custom AGC apps can bind raw GPU shader binaries
+	// directly in PM4 without calling sceAgcCreateShader. Scan the live binary up to S_ENDPGM.
+	if (addr != 0 && (addr % sizeof(uint32_t)) == 0 && HostMemoryIsReadable(addr)) {
+		constexpr uint32_t kMaxRawShaderBytes = 65536u;
+		constexpr uint32_t kPageSize          = 4096u;
+		uint32_t           readable_bytes     = 0;
+		while (readable_bytes < kMaxRawShaderBytes &&
+		       HostMemoryIsReadable(addr + readable_bytes)) {
+			const uint32_t page_rem =
+			    kPageSize - static_cast<uint32_t>((addr + readable_bytes) % kPageSize);
+			readable_bytes = std::min(kMaxRawShaderBytes, readable_bytes + page_rem);
+		}
+		readable_bytes &= ~3u;
+		if (readable_bytes >= sizeof(uint32_t)) {
+			const auto* binary = reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(addr));
+			ShaderRecompiler::Decoder::Program decoded {};
+			ShaderRecompiler::Decoder::DecodeProgram(
+			    std::span<const uint32_t> {binary, readable_bytes / sizeof(uint32_t)}, decoded);
+			if (!decoded.instructions.empty()) {
+				const auto& last = decoded.instructions.back();
+				uint32_t    code_bytes =
+				    last.pc + static_cast<uint32_t>(last.word_count) * sizeof(uint32_t);
+				// Also check if a barefoot footer sits right after the code (includes literal pool).
+				if (code_bytes + 0x30u <= readable_bytes) {
+					const uint32_t aligned = Common::AlignUp(code_bytes, 16u);
+					if (aligned + 0x30u <= readable_bytes &&
+					    std::memcmp(reinterpret_cast<const uint8_t*>(binary) + aligned, "barefoot",
+					                8) == 0) {
+						code_bytes = ShaderProgramSize(binary, aligned + 0x30u);
+					}
+				}
+				ShaderMapData mapped {};
+				mapped.code_size_bytes = code_bytes;
+				const uint64_t hash    = XXH3_64bits(binary, mapped.code_size_bytes);
+				ShaderMapEntry entry {mapped, hash};
+				LOGF("%s raw RDNA 2 shader fallback: addr=0x%016" PRIx64 " size=%u bytes hash=0x%016" PRIx64
+				     "\n",
+				     label, addr, mapped.code_size_bytes, hash);
+				std::scoped_lock lock(g_shader_map_mutex);
+				(*g_shader_map)[addr] = entry;
+				return entry;
+			}
+		}
 	}
 
 	EXIT("%s shader=0x%016" PRIx64 " is missing from ShaderMap\n", label, addr);

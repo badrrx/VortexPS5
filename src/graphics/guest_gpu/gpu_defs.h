@@ -185,6 +185,7 @@ enum class TileMode : uint32_t {
 	kStandard4KB  = 0x05,
 	kStandard64KB = 0x09,
 	kPrt          = 0x11,
+	kDisplay64KB  = 0x16,
 	kDepth        = 0x18,
 	kRenderTarget = 0x1b,
 };

@@ -1642,7 +1642,15 @@ static constexpr auto MakeContextIndirectTable() {
 			    KYTY_PM4_GET(value, CB_COLOR0_DCC_CONTROL, INDEPENDENT_64B_BLOCKS) != 0;
 			const bool independent_128b =
 			    KYTY_PM4_GET(value, CB_COLOR0_DCC_CONTROL, INDEPENDENT_128B_BLOCKS) != 0;
-			EXIT_NOT_IMPLEMENTED(independent_64b && independent_128b);
+			if (independent_64b && independent_128b) {
+				static uint32_t s_dcc_indep_warn_count = 0;
+				if (s_dcc_indep_warn_count < 4) {
+					++s_dcc_indep_warn_count;
+					LOGF("CB_COLOR%u_DCC_CONTROL: both INDEPENDENT_64B_BLOCKS and "
+					     "INDEPENDENT_128B_BLOCKS set; selecting 64B independent blocks\n",
+					     slot);
+				}
+			}
 			dcc.independent_block_size =
 			    independent_64b
 			        ? HW::ColorDccControl::IndependentBlockSize::Bytes64

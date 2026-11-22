@@ -275,6 +275,8 @@ enum class Opcode {
 	V_MAD_F32,
 	V_MAD_I16,
 	V_MAD_U16,
+	V_MAD_I32_I16,
+	V_MAD_U32_U16,
 	V_MAD_I32_I24,
 	V_MAD_U32_U24,
 	V_MAD_U64_U32,

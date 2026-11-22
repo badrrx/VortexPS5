@@ -260,6 +260,7 @@ bool TileGetTextureBlockLayout(Prospero::BufferFormat format, Prospero::TileMode
 			family = volume ? TileBlockFamily::Prt64KB3D : TileBlockFamily::Prt64KB;
 			break;
 		case Prospero::TileMode::kDepth: family = TileBlockFamily::Depth64KB; break;
+		case Prospero::TileMode::kDisplay64KB:
 		case Prospero::TileMode::kRenderTarget: family = TileBlockFamily::RenderTarget64KB; break;
 		default: return false;
 	}
@@ -939,7 +940,8 @@ bool TileGetDccSize(uint32_t width, uint32_t height, uint32_t slices,
 	TileBlockLayout block {};
 	MipTailLayout   tail {};
 	if (slices == 0 || levels > 16 || num_fragments_log2 != 0 ||
-	    (tile != Prospero::TileMode::kRenderTarget && tile != Prospero::TileMode::kDepth) ||
+	    (tile != Prospero::TileMode::kRenderTarget && tile != Prospero::TileMode::kDisplay64KB &&
+	     tile != Prospero::TileMode::kDepth) ||
 	    !TileGetBlockLayout(tile == Prospero::TileMode::kDepth ? TileBlockFamily::Depth64KB
 	                                                           : TileBlockFamily::RenderTarget64KB,
 	                        bytes_per_element, block) ||
@@ -1092,6 +1094,7 @@ uint32_t TileGetTexturePitch(Prospero::BufferFormat format, uint32_t width,
 		case Prospero::TileMode::kStandard4KB:
 		case Prospero::TileMode::kStandard64KB:
 		case Prospero::TileMode::kPrt:
+		case Prospero::TileMode::kDisplay64KB:
 		case Prospero::TileMode::kDepth:
 		case Prospero::TileMode::kRenderTarget: {
 			TileTextureBlockLayout layout {};
