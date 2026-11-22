@@ -1763,8 +1763,17 @@ static constexpr auto MakeContextIndirectTable() {
 			    KYTY_PM4_GET(value, CB_COLOR0_ATTRIB3, CMASK_PIPE_ALIGNED) != 0;
 			const bool dcc_pipe_aligned =
 			    KYTY_PM4_GET(value, CB_COLOR0_ATTRIB3, DCC_PIPE_ALIGNED) != 0;
-			EXIT_NOT_IMPLEMENTED(cmask_pipe_aligned != dcc_pipe_aligned);
-			attrib3.metadata_pipe_aligned = cmask_pipe_aligned;
+			if (cmask_pipe_aligned != dcc_pipe_aligned) {
+				static uint32_t s_pipe_align_warn_count = 0;
+				if (s_pipe_align_warn_count < 8) {
+					++s_pipe_align_warn_count;
+					LOGF("CB_COLOR%u_ATTRIB3: cmask_pipe_aligned (%d) != dcc_pipe_aligned (%d); "
+					     "falling back to metadata_pipe_aligned=%d\n",
+					     slot, cmask_pipe_aligned ? 1 : 0, dcc_pipe_aligned ? 1 : 0,
+					     (cmask_pipe_aligned || dcc_pipe_aligned) ? 1 : 0);
+				}
+			}
+			attrib3.metadata_pipe_aligned = cmask_pipe_aligned || dcc_pipe_aligned;
 			attrib3.write_vrs_rate_hint_to_cmask =
 			    KYTY_PM4_GET(value, CB_COLOR0_ATTRIB3, WRITE_VRS_RATE_HINT_TO_CMASK) != 0;
 			cp.GetCtx().SetColorAttrib3(slot, attrib3);
