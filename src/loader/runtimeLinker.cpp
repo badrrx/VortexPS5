@@ -1341,6 +1341,35 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	// The runtime automatically loads libc; other PRXs are requested by the application.
 	const auto libc_path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/libc.prx");
 	auto* libc = Common::File::IsFileExisting(libc_path) ? LoadProgram(libc_path) : nullptr;
+	if (libc != nullptr && libc->elf != nullptr && libc->base_vaddr != 0) {
+		const auto* ehdr = libc->elf->GetEhdr();
+		const auto* phdr = libc->elf->GetPhdr();
+		if (ehdr != nullptr && phdr != nullptr) {
+			for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+				if (phdr[i].p_type == PT_LOAD && (phdr[i].p_flags & PF_X) != 0 &&
+				    phdr[i].p_filesz > 0) {
+					const auto*  code = reinterpret_cast<const uint8_t*>(
+					    static_cast<uintptr_t>(libc->base_vaddr + phdr[i].p_vaddr));
+					const size_t scan = std::min<size_t>(phdr[i].p_filesz, 65536u);
+					size_t       nz   = 0;
+					for (size_t b = 0; b < scan && nz < 512; ++b) {
+						if (code[b] != 0) {
+							++nz;
+						}
+					}
+					if (nz < 512) {
+						Log::WriteToConsoleAndLog(fmt::format(
+						    "Detected stubbed homebrew libc.prx ({} non-zero code bytes in first {} B); "
+						    "unloading stub PRX and using HLE LibC\n",
+						    nz, scan));
+						UnloadProgram(libc);
+						libc = nullptr;
+					}
+					break;
+				}
+			}
+		}
+	}
 	RelocateAll();
 
 	if (!game_patch.empty()) {

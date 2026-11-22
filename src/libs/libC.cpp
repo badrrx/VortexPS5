@@ -18,8 +18,10 @@
 #include <cctype>
 #include <chrono>
 #include <cinttypes>
+#include <clocale>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -27,7 +29,11 @@
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#include <malloc.h>
+#endif
 
 namespace Libs {
 
@@ -905,6 +911,291 @@ static KYTY_SYSV_ABI int getifaddrs(void** ifap) {
 	return 0;
 }
 
+// HLE Heap Allocator (used when homebrew bundles a stubbed libc.prx or omits libc.prx)
+static std::mutex                 g_aligned_alloc_mutex;
+static std::unordered_set<void*>  g_aligned_allocs;
+
+static KYTY_SYSV_ABI void* hle_malloc(size_t size) {
+	return std::malloc(size == 0 ? 1u : size);
+}
+
+static KYTY_SYSV_ABI void* hle_calloc(size_t nmemb, size_t size) {
+	return std::calloc(nmemb == 0 ? 1u : nmemb, size == 0 ? 1u : size);
+}
+
+static KYTY_SYSV_ABI void hle_free(void* ptr) {
+	if (ptr == nullptr) {
+		return;
+	}
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	{
+		std::scoped_lock lock(g_aligned_alloc_mutex);
+		if (g_aligned_allocs.erase(ptr) > 0) {
+			_aligned_free(ptr);
+			return;
+		}
+	}
+#endif
+	std::free(ptr);
+}
+
+static KYTY_SYSV_ABI void* hle_realloc(void* ptr, size_t size) {
+	if (ptr == nullptr) {
+		return hle_malloc(size);
+	}
+	if (size == 0) {
+		hle_free(ptr);
+		return nullptr;
+	}
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	{
+		std::scoped_lock lock(g_aligned_alloc_mutex);
+		if (g_aligned_allocs.contains(ptr)) {
+			void* next = _aligned_realloc(ptr, size, 16u);
+			if (next != nullptr && next != ptr) {
+				g_aligned_allocs.erase(ptr);
+				g_aligned_allocs.insert(next);
+			}
+			return next;
+		}
+	}
+#endif
+	return std::realloc(ptr, size);
+}
+
+static KYTY_SYSV_ABI void* hle_aligned_alloc(size_t alignment, size_t size) {
+	const size_t align = std::max<size_t>(alignment, sizeof(void*));
+	const size_t bytes = size == 0 ? align : size;
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	void* ptr = _aligned_malloc(bytes, align);
+	if (ptr != nullptr) {
+		std::scoped_lock lock(g_aligned_alloc_mutex);
+		g_aligned_allocs.insert(ptr);
+	}
+	return ptr;
+#else
+	void* ptr = nullptr;
+	return ::posix_memalign(&ptr, align, bytes) == 0 ? ptr : nullptr;
+#endif
+}
+
+static KYTY_SYSV_ABI int hle_posix_memalign(void** memptr, size_t alignment, size_t size) {
+	if (memptr == nullptr || alignment < sizeof(void*) || (alignment & (alignment - 1u)) != 0) {
+		return Posix::POSIX_EINVAL;
+	}
+	void* ptr = hle_aligned_alloc(alignment, size);
+	if (ptr == nullptr) {
+		return Posix::POSIX_ENOMEM;
+	}
+	*memptr = ptr;
+	return 0;
+}
+
+static KYTY_SYSV_ABI char* hle_strdup(const char* s) {
+	if (s == nullptr) {
+		return nullptr;
+	}
+	const size_t len = std::strlen(s) + 1u;
+	auto*        out = static_cast<char*>(std::malloc(len));
+	if (out != nullptr) {
+		std::memcpy(out, s, len);
+	}
+	return out;
+}
+
+static KYTY_SYSV_ABI char* hle_strndup(const char* s, size_t n) {
+	if (s == nullptr) {
+		return nullptr;
+	}
+	const size_t len = ::strnlen(s, n);
+	auto*        out = static_cast<char*>(std::malloc(len + 1u));
+	if (out != nullptr) {
+		std::memcpy(out, s, len);
+		out[len] = '\0';
+	}
+	return out;
+}
+
+static KYTY_SYSV_ABI const void* hle_memchr(const void* s, int c, size_t n) {
+	return std::memchr(s, c, n);
+}
+
+static KYTY_SYSV_ABI size_t hle_strcspn(const char* s, const char* reject) {
+	return std::strcspn(s, reject);
+}
+
+static KYTY_SYSV_ABI size_t hle_strspn(const char* s, const char* accept) {
+	return std::strspn(s, accept);
+}
+
+static KYTY_SYSV_ABI const char* hle_strpbrk(const char* s, const char* accept) {
+	return std::strpbrk(s, accept);
+}
+
+static KYTY_SYSV_ABI char* hle_strtok(char* str, const char* delim) {
+	return std::strtok(str, delim);
+}
+
+static KYTY_SYSV_ABI char* hle_strtok_r(char* str, const char* delim, char** saveptr) {
+	if (saveptr == nullptr) {
+		return nullptr;
+	}
+	char* s = (str != nullptr) ? str : *saveptr;
+	if (s == nullptr) {
+		return nullptr;
+	}
+	s += std::strspn(s, delim);
+	if (*s == '\0') {
+		*saveptr = nullptr;
+		return nullptr;
+	}
+	char* end = s + std::strcspn(s, delim);
+	if (*end != '\0') {
+		*end     = '\0';
+		*saveptr = end + 1;
+	} else {
+		*saveptr = nullptr;
+	}
+	return s;
+}
+
+static KYTY_SYSV_ABI int hle_tolower(int c) {
+	return std::tolower(c);
+}
+
+static KYTY_SYSV_ABI int hle_toupper(int c) {
+	return std::toupper(c);
+}
+
+static KYTY_SYSV_ABI double hle_strtod(const char* nptr, char** endptr) {
+	return std::strtod(nptr, endptr);
+}
+
+static KYTY_SYSV_ABI float hle_strtof(const char* nptr, char** endptr) {
+	return std::strtof(nptr, endptr);
+}
+
+static KYTY_SYSV_ABI long long hle_strtoll(const char* nptr, char** endptr, int base) {
+	return std::strtoll(nptr, endptr, base);
+}
+
+static KYTY_SYSV_ABI unsigned long long hle_strtoull(const char* nptr, char** endptr, int base) {
+	return std::strtoull(nptr, endptr, base);
+}
+
+using guest_cmp_func_t = KYTY_SYSV_ABI int (*)(const void*, const void*);
+
+static KYTY_SYSV_ABI void hle_qsort(void* base, size_t nmemb, size_t size, guest_cmp_func_t cmp) {
+	if (base == nullptr || nmemb <= 1 || size == 0 || cmp == nullptr) {
+		return;
+	}
+	auto*               bytes = static_cast<uint8_t*>(base);
+	std::vector<size_t> order(nmemb);
+	for (size_t i = 0; i < nmemb; ++i) {
+		order[i] = i;
+	}
+	std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+		return cmp(bytes + a * size, bytes + b * size) < 0;
+	});
+	std::vector<uint8_t> tmp(nmemb * size);
+	for (size_t i = 0; i < nmemb; ++i) {
+		std::memcpy(tmp.data() + i * size, bytes + order[i] * size, size);
+	}
+	std::memcpy(bytes, tmp.data(), nmemb * size);
+}
+
+static KYTY_SYSV_ABI void* hle_bsearch(const void* key, const void* base, size_t nmemb, size_t size,
+                                       guest_cmp_func_t cmp) {
+	if (key == nullptr || base == nullptr || nmemb == 0 || size == 0 || cmp == nullptr) {
+		return nullptr;
+	}
+	const auto* bytes = static_cast<const uint8_t*>(base);
+	size_t      lo    = 0;
+	size_t      hi    = nmemb;
+	while (lo < hi) {
+		const size_t mid = lo + (hi - lo) / 2u;
+		const auto*  elm = bytes + mid * size;
+		const int    c   = cmp(key, elm);
+		if (c == 0) {
+			return const_cast<uint8_t*>(elm);
+		}
+		if (c < 0) {
+			hi = mid;
+		} else {
+			lo = mid + 1u;
+		}
+	}
+	return nullptr;
+}
+
+static KYTY_SYSV_ABI char* hle_setlocale(int category, const char* locale) {
+	return std::setlocale(category, locale);
+}
+
+static KYTY_SYSV_ABI std::lconv* hle_localeconv() {
+	return std::localeconv();
+}
+
+static KYTY_SYSV_ABI std::FILE* hle_fopen(const char* path, const char* mode) {
+	if (path == nullptr || mode == nullptr) {
+		return nullptr;
+	}
+	const auto real = LibKernel::FileSystem::GetRealFilename(path);
+	return std::fopen(Common::PathToString(real).c_str(), mode);
+}
+
+static KYTY_SYSV_ABI int hle_fclose(std::FILE* f) {
+	return f != nullptr ? std::fclose(f) : 0;
+}
+
+static KYTY_SYSV_ABI size_t hle_fread(void* ptr, size_t size, size_t nmemb, std::FILE* f) {
+	return f != nullptr ? std::fread(ptr, size, nmemb, f) : 0u;
+}
+
+static KYTY_SYSV_ABI size_t hle_fwrite(const void* ptr, size_t size, size_t nmemb, std::FILE* f) {
+	return f != nullptr ? std::fwrite(ptr, size, nmemb, f) : 0u;
+}
+
+static KYTY_SYSV_ABI int hle_fseek(std::FILE* f, long offset, int whence) {
+	return f != nullptr ? std::fseek(f, offset, whence) : -1;
+}
+
+static KYTY_SYSV_ABI long hle_ftell(std::FILE* f) {
+	return f != nullptr ? std::ftell(f) : -1L;
+}
+
+static KYTY_SYSV_ABI int hle_ferror(std::FILE* f) {
+	return f != nullptr ? std::ferror(f) : 0;
+}
+
+static KYTY_SYSV_ABI int hle_feof(std::FILE* f) {
+	return f != nullptr ? std::feof(f) : 1;
+}
+
+static KYTY_SYSV_ABI char* hle_fgets(char* s, int size, std::FILE* f) {
+	return f != nullptr ? std::fgets(s, size, f) : nullptr;
+}
+
+static KYTY_SYSV_ABI int hle_fputs(const char* s, std::FILE* f) {
+	return (f != nullptr && s != nullptr) ? std::fputs(s, f) : -1;
+}
+
+static KYTY_SYSV_ABI int hle_putchar(int c) {
+	return std::putchar(c);
+}
+
+static KYTY_SYSV_ABI long hle_lroundf(float x) {
+	return std::lround(x);
+}
+
+static KYTY_SYSV_ABI int hle_vsnprintf(char* s, size_t n, const char* format, VaList* c) {
+	return GetGuestVsnprintfFunc()(s, n, format, c);
+}
+
+static KYTY_SYSV_ABI int hle_libc_stub_zero() {
+	return 0;
+}
+
 LIB_DEFINE(InitLibcInternal_1) {
 	LibcInternalExt::InitLibcInternalExt_1(s);
 
@@ -945,6 +1236,47 @@ LIB_DEFINE(InitLibcInternal_1) {
 	LIB_FUNC("ay3uROQAc5A", LibcInternal::opendir);
 	LIB_FUNC("lybyyKtP54c", LibcInternal::readdir);
 	LIB_FUNC("j-gWL6wDros", LibcInternal::getifaddrs);
+
+	// HLE heap allocator & CRT (active when homebrew bundles a stubbed libc.prx)
+	LIB_FUNC("gQX+4GDQjpM", LibcInternal::hle_malloc);
+	LIB_FUNC("tIhsqj0qsFE", LibcInternal::hle_free);
+	LIB_FUNC("Y7aJ1uydPMo", LibcInternal::hle_realloc);
+	LIB_FUNC("2X5agFjKxMc", LibcInternal::hle_calloc);
+	LIB_FUNC("cVSk9y8URbc", LibcInternal::hle_posix_memalign);
+	LIB_FUNC("2Btkg8k24Zg", LibcInternal::hle_aligned_alloc);
+	LIB_FUNC("Ujf3KzMvRmI", LibcInternal::hle_aligned_alloc);
+	LIB_FUNC("g7zzzLDYGw0", LibcInternal::hle_strdup);
+	LIB_FUNC("XGnuIBmEmyk", LibcInternal::hle_strndup);
+	LIB_FUNC("8u8lPzUEq+U", LibcInternal::hle_memchr);
+	LIB_FUNC("q0F6yS-rCms", LibcInternal::hle_strcspn);
+	LIB_FUNC("-kU6bB4M-+k", LibcInternal::hle_strspn);
+	LIB_FUNC("kDZvoVssCgQ", LibcInternal::hle_strpbrk);
+	LIB_FUNC("oVkZ8W8-Q8A", LibcInternal::hle_strtok);
+	LIB_FUNC("enqPGLfmVNU", LibcInternal::hle_strtok_r);
+	LIB_FUNC("PqF+kHW-2WQ", LibcInternal::hle_tolower);
+	LIB_FUNC("TYE4irxSmko", LibcInternal::hle_toupper);
+	LIB_FUNC("2vDqwBlpF-o", LibcInternal::hle_strtod);
+	LIB_FUNC("xENtRue8dpI", LibcInternal::hle_strtof);
+	LIB_FUNC("VOBg+iNwB-4", LibcInternal::hle_strtoll);
+	LIB_FUNC("5OqszGpy7Mg", LibcInternal::hle_strtoull);
+	LIB_FUNC("AEJdIVZTEmo", LibcInternal::hle_qsort);
+	LIB_FUNC("NesIgTmfF0Q", LibcInternal::hle_bsearch);
+	LIB_FUNC("PtsB1Q9wsFA", LibcInternal::hle_setlocale);
+	LIB_FUNC("0hlfW1O4Aa4", LibcInternal::hle_localeconv);
+	LIB_FUNC("xeYO4u7uyJ0", LibcInternal::hle_fopen);
+	LIB_FUNC("uodLYyUip20", LibcInternal::hle_fclose);
+	LIB_FUNC("lbB+UlZqVG0", LibcInternal::hle_fread);
+	LIB_FUNC("MpxhMh8QFro", LibcInternal::hle_fwrite);
+	LIB_FUNC("rQFVBXp-Cxg", LibcInternal::hle_fseek);
+	LIB_FUNC("Qazy8LmXTvw", LibcInternal::hle_ftell);
+	LIB_FUNC("AHxyhN96dy4", LibcInternal::hle_ferror);
+	LIB_FUNC("LxcEU+ICu8U", LibcInternal::hle_feof);
+	LIB_FUNC("KdP-nULpuGw", LibcInternal::hle_fgets);
+	LIB_FUNC("QrZZdJ8XsX0", LibcInternal::hle_fputs);
+	LIB_FUNC("m5wN+SwZOR4", LibcInternal::hle_putchar);
+	LIB_FUNC("C6gWCWJKM+U", LibcInternal::hle_lroundf);
+	LIB_FUNC("Q2V+iqvjgC0", LibcInternal::hle_vsnprintf);
+	LIB_FUNC("QMFyLoqNxIg", LibcInternal::hle_libc_stub_zero);
 
 	LIB_FUNC("L1SBTkC+Cvw", LibC::abort);
 	LIB_FUNC("tsvEmnenz48", LibC::cxa_atexit);

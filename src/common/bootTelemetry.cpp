@@ -55,11 +55,18 @@ void BootTelemetry::MarkElfLoaded() {
 	if (m_elf_loaded_fast.load(std::memory_order_relaxed)) {
 		return;
 	}
-	std::scoped_lock lock(m_mutex);
-	if (!m_data.elf_loaded) {
-		m_data.elf_loaded    = true;
-		m_data.elf_loaded_ms = ElapsedMsLocked();
-		m_elf_loaded_fast.store(true, std::memory_order_release);
+	bool changed = false;
+	{
+		std::scoped_lock lock(m_mutex);
+		if (!m_data.elf_loaded) {
+			m_data.elf_loaded    = true;
+			m_data.elf_loaded_ms = ElapsedMsLocked();
+			m_elf_loaded_fast.store(true, std::memory_order_release);
+			changed = true;
+		}
+	}
+	if (changed) {
+		(void)FlushIfActive();
 	}
 }
 
@@ -67,11 +74,18 @@ void BootTelemetry::MarkFirstGpuSubmit() {
 	if (m_first_gpu_submit_fast.load(std::memory_order_relaxed)) {
 		return;
 	}
-	std::scoped_lock lock(m_mutex);
-	if (!m_data.first_gpu_submit) {
-		m_data.first_gpu_submit    = true;
-		m_data.first_gpu_submit_ms = ElapsedMsLocked();
-		m_first_gpu_submit_fast.store(true, std::memory_order_release);
+	bool changed = false;
+	{
+		std::scoped_lock lock(m_mutex);
+		if (!m_data.first_gpu_submit) {
+			m_data.first_gpu_submit    = true;
+			m_data.first_gpu_submit_ms = ElapsedMsLocked();
+			m_first_gpu_submit_fast.store(true, std::memory_order_release);
+			changed = true;
+		}
+	}
+	if (changed) {
+		(void)FlushIfActive();
 	}
 }
 
@@ -79,11 +93,18 @@ void BootTelemetry::MarkFirstFramePresented() {
 	if (m_first_frame_fast.load(std::memory_order_relaxed)) {
 		return;
 	}
-	std::scoped_lock lock(m_mutex);
-	if (!m_data.first_frame_presented) {
-		m_data.first_frame_presented = true;
-		m_data.first_frame_ms        = ElapsedMsLocked();
-		m_first_frame_fast.store(true, std::memory_order_release);
+	bool changed = false;
+	{
+		std::scoped_lock lock(m_mutex);
+		if (!m_data.first_frame_presented) {
+			m_data.first_frame_presented = true;
+			m_data.first_frame_ms        = ElapsedMsLocked();
+			m_first_frame_fast.store(true, std::memory_order_release);
+			changed = true;
+		}
+	}
+	if (changed) {
+		(void)FlushIfActive();
 	}
 }
 

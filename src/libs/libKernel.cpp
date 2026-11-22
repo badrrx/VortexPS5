@@ -2026,6 +2026,14 @@ int KYTY_SYSV_ABI sigemptyset(void* set) {
 	return 0;
 }
 
+int KYTY_SYSV_ABI sigaltstack(const void* /*ss*/, void* old_ss) {
+	PRINT_NAME();
+	if (old_ss != nullptr) {
+		std::memset(old_ss, 0, 24);
+	}
+	return 0;
+}
+
 int KYTY_SYSV_ABI poll(void* /*fds*/, uint64_t /*nfds*/, int /*timeout*/) {
 	PRINT_NAME();
 	return 0;
@@ -3698,6 +3706,7 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("KiJEPEWRyUY", Posix::sigaction);
 	LIB_FUNC("VADc3MNQ3cM", Posix::signal);
 	LIB_FUNC("+F7C-hdk7+E", Posix::sigemptyset);
+	LIB_FUNC("sHziAegVp74", Posix::sigaltstack);
 	LIB_FUNC("ku7D4q1Y9PI", Posix::poll);
 	LIB_FUNC("PfccT7qURYE", Posix::ioctl);
 	LIB_FUNC("I7ImcLds-uU", Posix::readv);
