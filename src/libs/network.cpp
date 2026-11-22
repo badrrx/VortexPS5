@@ -2086,6 +2086,10 @@ int KYTY_SYSV_ABI Connect(int s, const void* addr, uint32_t addrlen) {
 		return -1;
 	}
 
+	if (!Config::IsNetworkConnected()) {
+		return SetGuestSocketError(Posix::POSIX_ENETUNREACH);
+	}
+
 	if (::connect(socket, reinterpret_cast<const sockaddr*>(&host_addr), host_addrlen) != 0) {
 		return SetHostSocketError();
 	}
