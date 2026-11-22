@@ -690,8 +690,16 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		return {.layout = vk::ImageLayout::eGeneral};
 	}
 	const auto alignment = desc.info.DataAlignment();
-	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
-	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
+	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0);
+	if ((address & (static_cast<uint64_t>(alignment) - 1u)) != 0) {
+		static uint32_t s_unaligned_tex_warns = 0;
+		if (s_unaligned_tex_warns++ < 8) {
+			printf("[Graphics] Warning: texture addr=0x%016" PRIx64
+			       " size=%" PRIu64 " not aligned to %u (tile=0x%x %ux%u fmt=%u levels=%u)\n",
+			       address, desc.info.data.size, alignment, static_cast<uint32_t>(tile), width,
+			       height, static_cast<uint32_t>(format), levels);
+		}
+	}
 	if (storage) {
 		ValidateStorageTexture(resource, descriptor, desc.info.data.size);
 	}
