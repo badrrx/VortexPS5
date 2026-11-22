@@ -295,10 +295,11 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 		case 2:
 		case 4:
 		case 5:
-		case 6: break;
+		case 6:
+		case 0x0b: break; // GFX10.3 / RDNA 2 TC_L2 memory write-data selector
 		default: EXIT("unsupported writeData destination selector 0x%02" PRIx32 "\n", dst_sel);
 	}
-	if (dw_num == 0) {
+	if (dw_num == 0 || dst == nullptr) {
 		return;
 	}
 

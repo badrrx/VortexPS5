@@ -1200,6 +1200,14 @@ static KYTY_SYSV_ABI long hle_lroundf(float x) {
 	return std::lround(x);
 }
 
+static KYTY_SYSV_ABI float hle_expf(float x) {
+	return std::exp(x);
+}
+
+static KYTY_SYSV_ABI float hle_powf(float x, float y) {
+	return std::pow(x, y);
+}
+
 static KYTY_SYSV_ABI int hle_vsnprintf(char* s, size_t n, const char* format, VaList* c) {
 	return GetGuestVsnprintfFunc()(s, n, format, c);
 }
@@ -1369,6 +1377,8 @@ LIB_DEFINE(InitLibcInternal_1) {
 	LIB_FUNC("QrZZdJ8XsX0", LibcInternal::hle_fputs);
 	LIB_FUNC("m5wN+SwZOR4", LibcInternal::hle_putchar);
 	LIB_FUNC("C6gWCWJKM+U", LibcInternal::hle_lroundf);
+	LIB_FUNC("8zsu04XNsZ4", LibcInternal::hle_expf);
+	LIB_FUNC("1D0H2KNjshE", LibcInternal::hle_powf);
 	LIB_FUNC("Q2V+iqvjgC0", LibcInternal::hle_vsnprintf);
 	LIB_FUNC("QMFyLoqNxIg", LibcInternal::hle_libc_stub_zero);
 	LIB_FUNC("6eU9xX9oEdQ", LibcInternal::hle_mbtowc);
