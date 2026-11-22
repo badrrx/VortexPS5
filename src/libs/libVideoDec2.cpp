@@ -209,7 +209,8 @@ static void ApplyDecodedOutput(const Decoder::Output& decoded, Videodec2FrameBuf
 
 static int32_t ValidateDecoderConfig(const Videodec2DecoderConfigInfo* config,
                                      bool                              require_compute_queue) {
-	if (config->resource_type != VIDEODEC2_RESOURCE_TYPE_COMPUTE) {
+	// Accept Standard (0), Compute (1), and Dedicated (2) decoder resource types.
+	if (config->resource_type > 2u) {
 		return VIDEODEC2_ERROR_RESOURCE_TYPE;
 	}
 
@@ -234,7 +235,8 @@ static int32_t ValidateDecoderConfig(const Videodec2DecoderConfigInfo* config,
 		return VIDEODEC2_ERROR_FRAME_WIDTH_HEIGHT;
 	}
 
-	if (require_compute_queue && config->compute_queue == nullptr) {
+	if (require_compute_queue && config->resource_type == VIDEODEC2_RESOURCE_TYPE_COMPUTE &&
+	    config->compute_queue == nullptr) {
 		return VIDEODEC2_ERROR_COMPUTE_QUEUE;
 	}
 

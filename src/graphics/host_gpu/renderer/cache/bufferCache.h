@@ -21,6 +21,7 @@
 namespace Libs::Graphics {
 
 struct GraphicContext;
+enum class MemoryPressureTier : uint8_t;
 class CommandScheduler;
 class TextureCache;
 
@@ -91,7 +92,8 @@ public:
 	void SynchronizeBda(const RangeSet& mapped);
 	// Queue after the range's state change becomes visible, or a drain could consume it first.
 	void               QueueBdaSync(uint64_t vaddr, uint64_t size);
-	void               RunGarbageCollector();
+	void               RunGarbageCollector(
+	                   MemoryPressureTier pressure = static_cast<MemoryPressureTier>(0));
 
 private:
 	friend struct BufferCacheTestAccess;
@@ -160,6 +162,11 @@ private:
 	uint64_t m_critical_gc_memory = 2ull * 1024 * 1024 * 1024;
 	uint64_t m_gc_tick            = 0;
 };
+
+// Page-walked sparse guest read: copies mapped 16 KiB PS5 pages and zero-fills unmapped PRT holes.
+// Returns the number of unmapped bytes that were zero-filled.
+uint64_t ReadSparseGuestMemorySafe(uint64_t vaddr, void* dst, uint64_t size,
+                                   bool prefer_backing = false);
 
 } // namespace Libs::Graphics
 

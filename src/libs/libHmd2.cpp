@@ -279,7 +279,10 @@ Hmd2ReprojectionInitialize(const SceHmd2ReprojectionInitializeParam* param, void
 	if (param == nullptr || param->pReprojectionBuff == nullptr || param->pDisplayBuff == nullptr) {
 		return ERROR_PARAMETER_NULL;
 	}
-	EXIT_NOT_IMPLEMENTED(param->pSeeThroughBuff != nullptr);
+	if (param->pSeeThroughBuff != nullptr) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "Hmd2: ignoring optional see-through buffer %p\n", param->pSeeThroughBuff);
+	}
 	const auto display_size = ReprojectionDisplaySize();
 	auto* state = new (param->pReprojectionBuff) ReprojectionState;
 	if (param->reprojectionTiming != 0) {
@@ -468,7 +471,12 @@ static int32_t KYTY_SYSV_ABI Hmd2ReprojectionSetTiming(int32_t timing) {
 	if (state == nullptr) {
 		return ERROR_REPROJECTION_NOT_INITIALIZED;
 	}
-	EXIT_NOT_IMPLEMENTED(timing < 2000 || timing > 7000);
+	if (timing < 2000 || timing > 7000) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "Hmd2: clamping out-of-range reprojection timing %d us to [2000, 7000]\n",
+		           timing);
+		timing = std::clamp(timing, 2000, 7000);
+	}
 	const auto rounded = static_cast<uint32_t>((timing + 99) / 100 * 100);
 	state->timing_us.store(rounded, std::memory_order_release);
 	LOGF("Hmd2: reprojection timing=%u us\n", rounded);

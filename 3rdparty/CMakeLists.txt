@@ -154,13 +154,15 @@ add_library(imgui STATIC
 	imgui/imgui_tables.cpp
 	imgui/imgui_widgets.cpp
 	imgui/backends/imgui_impl_vulkan.cpp
+	imgui/backends/imgui_impl_sdl3.cpp
+	imgui/backends/imgui_impl_sdlrenderer3.cpp
 )
 target_include_directories(imgui PUBLIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/imgui"
 	"${CMAKE_CURRENT_SOURCE_DIR}/imgui/backends"
 )
 target_compile_definitions(imgui PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
-target_link_libraries(imgui PUBLIC Vulkan::Headers)
+target_link_libraries(imgui PUBLIC Vulkan::Headers SDL3::SDL3)
 if(MSVC)
 	target_compile_options(imgui PRIVATE /W0)
 else()

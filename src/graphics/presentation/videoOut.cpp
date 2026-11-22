@@ -2,6 +2,7 @@
 
 #include "common/abi.h"
 #include "common/assert.h"
+#include "common/bootTelemetry.h"
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
@@ -257,11 +258,12 @@ public:
 	static constexpr int VIDEO_OUT_NUM_MAX = VIDEO_OUT_BUSES.size() + 1;
 
 	Impl(uint32_t width, uint32_t height, Graphics::Presenter& presenter)
-	    : width(width), height(height), m_renderer(presenter.Renderer()), m_presenter(presenter),
-	      m_flip_queue(presenter, width, height) {
+	    : width(width), height(height), m_renderer(&presenter.Renderer()), m_presenter(&presenter),
+	      m_flip_queue(std::in_place, presenter, width, height) {
 		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 		m_present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
 	}
+	Impl(uint32_t width, uint32_t height) : width(width), height(height) {}
 	~Impl();
 	KYTY_CLASS_NO_COPY(Impl);
 
@@ -271,9 +273,11 @@ public:
 	VideoOutConfig* GetByLabel(const uint64_t* label);
 	int             SetFlipMaster(int slave_handle, int master_handle);
 
-	FlipQueue&               GetFlipQueue() { return m_flip_queue; }
-	Graphics::RenderContext& Renderer() const noexcept { return m_renderer; }
-	bool                     IsHdrSupported() const noexcept { return m_presenter.IsHdrSupported(); }
+	FlipQueue&               GetFlipQueue() { return *m_flip_queue; }
+	Graphics::RenderContext& Renderer() const noexcept { return *m_renderer; }
+	bool                     IsHdrSupported() const noexcept {
+		return m_presenter != nullptr && m_presenter->IsHdrSupported();
+	}
 
 	void VblankBegin();
 	void VblankEnd();
@@ -289,9 +293,9 @@ private:
 
 	Common::Mutex            m_mutex;
 	VideoOutConfig           m_video_out_ctx[VIDEO_OUT_NUM_MAX];
-	Graphics::RenderContext& m_renderer;
-	Graphics::Presenter&     m_presenter;
-	FlipQueue                m_flip_queue;
+	Graphics::RenderContext* m_renderer  = nullptr;
+	Graphics::Presenter*     m_presenter = nullptr;
+	std::optional<FlipQueue> m_flip_queue;
 	std::jthread             m_present_thread;
 };
 
@@ -594,6 +598,9 @@ Graphics::ImageInfo BufferAttributeGroup::ImageInfo(const VideoOutBuffer& buffer
 VideoOutDriver::VideoOutDriver(uint32_t width, uint32_t height, Graphics::Presenter& presenter)
     : m_impl(std::make_unique<Impl>(width, height, presenter)) {}
 
+VideoOutDriver::VideoOutDriver(uint32_t width, uint32_t height)
+    : m_impl(std::make_unique<Impl>(width, height)) {}
+
 VideoOutDriver::~VideoOutDriver() = default;
 
 VideoOutDriver::Impl& VideoOutDriver::State() noexcept {
@@ -603,6 +610,12 @@ VideoOutDriver::Impl& VideoOutDriver::State() noexcept {
 VideoOutDriver& VideoOutInit(uint32_t width, uint32_t height, Graphics::Presenter& presenter) {
 	EXIT_IF(g_video_out_driver != nullptr);
 	g_video_out_driver = std::make_unique<VideoOutDriver>(width, height, presenter);
+	return *g_video_out_driver;
+}
+
+VideoOutDriver& VideoOutInitHeadless(uint32_t width, uint32_t height) {
+	EXIT_IF(g_video_out_driver != nullptr);
+	g_video_out_driver = std::make_unique<VideoOutDriver>(width, height);
 	return *g_video_out_driver;
 }
 
@@ -630,7 +643,9 @@ int VideoOutDriver::Impl::Open(int bus_type, int index) {
 	if (bus == VIDEO_OUT_BUSES.end()) {
 		return VIDEO_OUT_ERROR_INVALID_VALUE;
 	}
-	EXIT_NOT_IMPLEMENTED(index != 0);
+	if (index != 0) {
+		return VIDEO_OUT_ERROR_INVALID_VALUE;
+	}
 	Common::LockGuard lock(m_mutex);
 
 	const int handle = static_cast<int>(bus - VIDEO_OUT_BUSES.begin()) + 1;
@@ -714,11 +729,15 @@ bool VideoOutDriver::Impl::Close(int handle) {
 		Common::LockGuard master_lock(master->mutex);
 		master->slave_count--;
 	}
-	m_flip_queue.Cancel(config);
+	if (m_flip_queue.has_value()) {
+		m_flip_queue->Cancel(config);
+	}
 	if (config.bus == VIDEO_OUT_BUS_TYPE_HMD2_MAIN) {
 		g_headset_mirror = false;
 	}
-	m_presenter.ClearLayer(config.bus);
+	if (m_presenter != nullptr) {
+		m_presenter->ClearLayer(config.bus);
+	}
 	DeleteVideoOutEvents(flip_events, VideoOutEventKind::Flip);
 	DeleteVideoOutEvents(pre_vblank_events, VideoOutEventKind::PreVblankStart);
 	DeleteVideoOutEvents(vblank_events, VideoOutEventKind::Vblank);
@@ -819,10 +838,10 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		total_wait -= frame_begin - sleep_begin;
 
 		VblankBegin();
-		bool presented = m_flip_queue.Flip();
-		if (!presented && m_presenter.NeedsSystemOverlayRefresh()) {
-			if (!m_presenter.PresentLastFrame()) {
-				m_presenter.Present(m_presenter.PrepareBlankFrame(width, height, true));
+		bool presented = m_flip_queue->Flip();
+		if (!presented && m_presenter->NeedsSystemOverlayRefresh()) {
+			if (!m_presenter->PresentLastFrame()) {
+				m_presenter->Present(m_presenter->PrepareBlankFrame(width, height, true));
 			}
 			presented = true;
 		}
@@ -835,7 +854,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 				}
 			}
 			if (!any_open) {
-				m_presenter.Present(m_presenter.PrepareBlankFrame(width, height, true));
+				m_presenter->Present(m_presenter->PrepareBlankFrame(width, height, true));
 			}
 		}
 		VblankEnd();
@@ -1144,6 +1163,7 @@ bool FlipQueue::Flip() {
 		}
 		if (layer_count != 0) {
 			m_presenter.Present(std::span(layers.data(), layer_count));
+			Common::BootTelemetry::Global().MarkFirstFramePresented();
 		}
 		if (requests[0].cfg->bus == 0) {
 			Graphics::PerformanceOverlayRecordFlip(m_width, m_height);
@@ -1200,14 +1220,22 @@ KYTY_SYSV_ABI int VideoOutSetFlipMaster(int slave_handle, int master_handle) {
 KYTY_SYSV_ABI void VideoOutAddBufferAttributeOption(VideoOutBufferAttribute2* attribute,
                                                    uint64_t option) {
 	PRINT_NAME();
-	EXIT_IF(attribute == nullptr);
+	if (attribute == nullptr) {
+		return;
+	}
 	attribute->option |= option;
 }
 
 KYTY_SYSV_ABI int VideoOutOpen(int user_id, int bus_type, int index, const void* param) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(user_id != 255 && user_id != 0);
+	if (user_id < 0) {
+		return VIDEO_OUT_ERROR_INVALID_VALUE;
+	}
+	if (user_id != 255 && user_id != 0) {
+		LOGF_COLOR(Log::Color::Yellow, "\t VideoOutOpen: accepting non-system user_id=%d\n",
+		           user_id);
+	}
 	LOGF("\t param = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(param));
 
 	return DriverState().Open(bus_type, index);
@@ -1226,7 +1254,9 @@ KYTY_SYSV_ABI void VideoOutSetBufferAttribute2(VideoOutBufferAttribute2* attribu
                                                uint64_t dcc_cb_register_clear_color) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(attribute == nullptr);
+	if (attribute == nullptr) {
+		return;
+	}
 
 	LOGF("\t pixel_format                = %016" PRIx64 "\n"
 	     "\t tiling_mode                 = %" PRIu32 "\n"
@@ -1261,7 +1291,7 @@ KYTY_SYSV_ABI int VideoOutSetFlipRate(int handle, int rate) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 
-	if (rate < 0 || rate > 2) {
+	if (rate < 0 || rate > 3) {
 		return VIDEO_OUT_ERROR_INVALID_VALUE;
 	}
 
@@ -1759,6 +1789,10 @@ KYTY_SYSV_ABI int VideoOutAllowOutputResolutionWqhdDetection(int handle) {
 KYTY_SYSV_ABI int VideoOutVrrPegToFixedRate(int handle, uint64_t arg1, uint64_t arg2) {
 	PRINT_NAME();
 
+	if (DriverState().Get(handle) == nullptr) {
+		return VIDEO_OUT_ERROR_INVALID_HANDLE;
+	}
+
 	static std::atomic_bool logged {false};
 	if (!logged.exchange(true, std::memory_order_relaxed)) {
 		LOGF("\t handle = %d\n"
@@ -1772,6 +1806,10 @@ KYTY_SYSV_ABI int VideoOutVrrPegToFixedRate(int handle, uint64_t arg1, uint64_t 
 
 KYTY_SYSV_ABI int VideoOutVrrUnpegFromFixedRate(int handle) {
 	PRINT_NAME();
+
+	if (DriverState().Get(handle) == nullptr) {
+		return VIDEO_OUT_ERROR_INVALID_HANDLE;
+	}
 
 	static std::atomic_bool logged {false};
 	if (!logged.exchange(true, std::memory_order_relaxed)) {

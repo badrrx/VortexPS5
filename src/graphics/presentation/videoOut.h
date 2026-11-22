@@ -29,6 +29,7 @@ public:
 	struct Impl;
 
 	VideoOutDriver(uint32_t width, uint32_t height, Graphics::Presenter& presenter);
+	VideoOutDriver(uint32_t width, uint32_t height);
 	~VideoOutDriver();
 	KYTY_CLASS_NO_COPY(VideoOutDriver);
 
@@ -47,6 +48,7 @@ private:
 
 [[nodiscard]] VideoOutDriver& VideoOutInit(uint32_t width, uint32_t height,
                                            Graphics::Presenter& presenter);
+[[nodiscard]] VideoOutDriver& VideoOutInitHeadless(uint32_t width, uint32_t height);
 void                          VideoOutShutdown();
 // The labels the flip and wait packets name a port's buffers by, and the port's bus; nullptr for a
 // closed port.

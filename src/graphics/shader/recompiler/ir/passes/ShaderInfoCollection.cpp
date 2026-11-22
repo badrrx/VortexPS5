@@ -286,8 +286,9 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 	const auto address_access = AddressOpcodeInfoOf(op).access;
 	const auto shared_access = SharedAccessOf(op);
 	info.float64 |= inst.GetType() == Type::F64;
-	info.buffer_int64_atomics |= buffer_access == BufferAccess::Atomic &&
-	                             inst.GetType() == Type::U64;
+	info.buffer_int64_atomics |=
+	    (buffer_access == BufferAccess::Atomic || address_access == AddressAccess::Write) &&
+	    inst.GetType() == Type::U64;
 	if (buffer_access != BufferAccess::None || address_access != AddressAccess::None ||
 	    shared_access != SharedAccess::None) {
 		const auto index = inst.Flags<MemoryFlags>().index;
@@ -322,7 +323,9 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				info.function_scratch = true;
 				info.function_lds |= kind == ResourceKind::FlatLocal &&
 				                     program.stage != ShaderType::Compute && program.stage != ShaderType::Mesh;
-			} else if (address_access == AddressAccess::Write) {
+			} else if (address_access == AddressAccess::Write &&
+			           (op < ValueOpcode::AddressAtomicSwap32 ||
+			            op > ValueOpcode::AddressAtomicXor64)) {
 				return Fail("writable FLAT/GLOBAL addresses require GPU ownership tracking");
 			} else {
 				info.coherent_buffers |= memory.coherent;

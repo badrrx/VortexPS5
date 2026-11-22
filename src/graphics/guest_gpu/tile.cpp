@@ -1031,36 +1031,49 @@ void TileGetTextureSize(Prospero::BufferFormat format, uint32_t width, uint32_t 
 		return;
 	}
 	if (total_size != nullptr && total_size->size == 0) {
-		EXIT("unknown format:\nformat = %u\nwidth  = %u\nheight = %u\nlevels = %u\ntile   = %u\n",
-		     static_cast<uint32_t>(format), width, height, levels, static_cast<uint32_t>(tile));
+		const uint64_t safe_w = std::max<uint32_t>(width, 1u);
+		const uint64_t safe_h = std::max<uint32_t>(height, 1u);
+		const uint64_t fallback_size = std::min<uint64_t>(safe_w * safe_h * 4u, 0xFFFFFFFFull);
+		total_size->size             = static_cast<uint32_t>(fallback_size);
+		total_size->align            = 256u;
+		LOGF_COLOR(Log::Color::Yellow,
+		           "Tile: fallback linear size=%" PRIu32 " for format=%u %ux%u levels=%u tile=%u\n",
+		           total_size->size, static_cast<uint32_t>(format), width, height, levels,
+		           static_cast<uint32_t>(tile));
 	}
 }
 
 void TileGetTextureTotalSize(Prospero::BufferFormat format, uint32_t width, uint32_t height,
                              uint32_t depth, uint32_t levels, Prospero::TileMode tile,
                              bool volume_texture, TileSizeAlign& total_size) {
-	EXIT_NOT_IMPLEMENTED(depth == 0);
+	if (depth == 0) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "Tile: clamping degenerate depth=0 to 1 for format=%u %ux%u\n",
+		           static_cast<uint32_t>(format), width, height);
+		depth = 1u;
+	}
 	if (volume_texture && tile != Prospero::TileMode::kLinear) {
 		TileSurfaceLayout            layout {};
 		TileMipLayout                mips[16];
 		const TileSurfaceDescription description {
 		    format, tile, TileSurfaceDimension::Dim3D, width, height, depth, levels, 1};
-		if (!TileGetTiledTextureLayout(description, layout, mips)) {
-			EXIT("unsupported 3D texture layout: format=%u tile=%u extent=%ux%ux%u levels=%u\n",
-			     static_cast<uint32_t>(format), static_cast<uint32_t>(tile), width, height, depth,
-			     levels);
+		if (TileGetTiledTextureLayout(description, layout, mips) &&
+		    layout.total_size <= UINT32_MAX) {
+			total_size.size  = static_cast<uint32_t>(layout.total_size);
+			total_size.align = layout.texture.block.block_size;
+			return;
 		}
-		EXIT_NOT_IMPLEMENTED(layout.total_size > UINT32_MAX);
-		total_size.size  = static_cast<uint32_t>(layout.total_size);
-		total_size.align = layout.texture.block.block_size;
-		return;
+		LOGF_COLOR(Log::Color::Yellow,
+		           "Tile: unsupported 3D layout format=%u tile=%u %ux%ux%u levels=%u — falling back to linear slices\n",
+		           static_cast<uint32_t>(format), static_cast<uint32_t>(tile), width, height, depth,
+		           levels);
 	}
 
 	TileSizeAlign slice_size {};
 	TileGetTextureSize(format, width, height, levels, tile, &slice_size, nullptr, nullptr);
 	total_size           = slice_size;
-	const uint64_t total = static_cast<uint64_t>(slice_size.size) * depth;
-	EXIT_NOT_IMPLEMENTED(total > 0xffffffffull);
+	const uint64_t total = std::min<uint64_t>(static_cast<uint64_t>(slice_size.size) * depth,
+	                                          0xFFFFFFFFull);
 	total_size.size = static_cast<uint32_t>(total);
 }
 

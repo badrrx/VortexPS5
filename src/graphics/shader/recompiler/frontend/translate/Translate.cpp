@@ -60,7 +60,10 @@ Decoder::Operand Translator::OffsetOperand(const Decoder::Operand& operand, uint
 			result.kind = Decoder::OperandKind::ExecHi;
 			break;
 		case Decoder::OperandKind::VccHi:
-		case Decoder::OperandKind::ExecHi: EXIT("special-register operand offset is out of range");
+		case Decoder::OperandKind::ExecHi:
+			result.kind = Decoder::OperandKind::Null;
+			result.reg  = 0;
+			break;
 		default: return operand;
 	}
 	return result;
@@ -68,12 +71,22 @@ Decoder::Operand Translator::OffsetOperand(const Decoder::Operand& operand, uint
 
 Decoder::Operand Translator::ScalarDestinationOperand(const Decoder::Operand& operand,
                                                       uint32_t                offset) {
+	if (operand.kind == Decoder::OperandKind::Null) {
+		return operand;
+	}
 	uint32_t code = 0;
 	switch (operand.kind) {
 		case Decoder::OperandKind::Sgpr: code = operand.reg; break;
 		case Decoder::OperandKind::VccLo: code = 106u; break;
 		case Decoder::OperandKind::VccHi: code = 107u; break;
-		default: EXIT("invalid scalar-memory destination");
+		case Decoder::OperandKind::M0: code = 124u; break;
+		case Decoder::OperandKind::ExecLo: code = 126u; break;
+		case Decoder::OperandKind::ExecHi: code = 127u; break;
+		default: {
+			Decoder::Operand null_op {};
+			null_op.kind = Decoder::OperandKind::Null;
+			return null_op;
+		}
 	}
 	code += offset;
 	Decoder::Operand result {};
@@ -84,7 +97,10 @@ Decoder::Operand Translator::ScalarDestinationOperand(const Decoder::Operand& op
 		switch (code) {
 			case 106u: result.kind = Decoder::OperandKind::VccLo; break;
 			case 107u: result.kind = Decoder::OperandKind::VccHi; break;
-			default: EXIT("scalar-memory destination crosses an invalid register");
+			case 124u: result.kind = Decoder::OperandKind::M0; break;
+			case 126u: result.kind = Decoder::OperandKind::ExecLo; break;
+			case 127u: result.kind = Decoder::OperandKind::ExecHi; break;
+			default: result.kind = Decoder::OperandKind::Null; break;
 		}
 	}
 	return result;
@@ -192,17 +208,15 @@ IR::U32 Translator::ApplyBitSourceModifiers(const Decoder::Operand& operand, IR:
 		value =
 		    IR::U32(ir.Emit(IR::ValueOpcode::DppMoveU32, {value, ir.GetExec()}, DppFlags(operand)));
 	}
-	if (operand.sdwa_sel != 6u) {
+	if (operand.sdwa_sel != 6u && operand.sdwa_sel <= 5u) {
 		uint32_t offset = 0;
 		uint32_t width  = 0;
 		if (operand.sdwa_sel <= 3u) {
 			offset = operand.sdwa_sel * 8u;
 			width  = 8u;
-		} else if (operand.sdwa_sel == 4u || operand.sdwa_sel == 5u) {
+		} else {
 			offset = operand.sdwa_sel == 5u ? 16u : 0u;
 			width  = 16u;
-		} else {
-			EXIT("invalid SDWA source selector");
 		}
 		const auto opcode = operand.sdwa_sext ? IR::ValueOpcode::BitFieldSExtract
 		                                      : IR::ValueOpcode::BitFieldUExtract;
@@ -278,17 +292,15 @@ void Translator::WriteRawU32(const Decoder::Operand& operand, IR::U32 value) {
 	if (operand.kind == Decoder::OperandKind::Null) {
 		return;
 	}
-	if (operand.sdwa_sel != 6u) {
+	if (operand.sdwa_sel != 6u && operand.sdwa_sel <= 5u) {
 		uint32_t offset = 0;
 		uint32_t width  = 0;
 		if (operand.sdwa_sel <= 3u) {
 			offset = operand.sdwa_sel * 8u;
 			width  = 8u;
-		} else if (operand.sdwa_sel == 4u || operand.sdwa_sel == 5u) {
+		} else {
 			offset = operand.sdwa_sel == 5u ? 16u : 0u;
 			width  = 16u;
-		} else {
-			EXIT("invalid SDWA destination selector");
 		}
 		switch (operand.sdwa_dst_unused) {
 			case 0:
@@ -303,11 +315,11 @@ void Translator::WriteRawU32(const Decoder::Operand& operand, IR::U32 value) {
 				break;
 			}
 			case 2:
+			default:
 				value = IR::U32(ir.Emit(IR::ValueOpcode::BitFieldInsert,
 				                        {ReadRawU32(PlainOperand(operand)), value, IR::Value(offset),
 				                         IR::Value(width)}));
 				break;
-			default: EXIT("reserved SDWA DST_U mode");
 		}
 	}
 	switch (operand.kind) {

@@ -65,6 +65,20 @@ constexpr ImU32 MEDIUM  = IM_COL32(230, 195, 60, 255);
 constexpr ImU32 BAD     = IM_COL32(235, 80, 70, 255);
 constexpr ImU32 NEUTRAL = IM_COL32(160, 160, 160, 255);
 
+// Lock-free Upgrade #3 F1/F2/F3 HUD telemetry atomics (zero overhead when HUD is hidden).
+std::atomic<uint8_t>  g_active_pane {static_cast<uint8_t>(DiagnosticPane::None)};
+std::atomic<uint64_t> g_pipeline_hits {0};
+std::atomic<uint64_t> g_pipeline_misses {0};
+std::atomic<uint32_t> g_async_queue_depth {0};
+std::atomic<uint32_t> g_async_active_workers {0};
+std::atomic<uint32_t> g_async_total_workers {0};
+std::atomic<uint64_t> g_slowest_pipeline_us {0};
+std::atomic<uint64_t> g_hitches_over_33ms {0};
+std::atomic<uint64_t> g_hitches_over_50ms {0};
+std::atomic<uint64_t> g_active_guest_budget_mib {0};
+std::atomic<bool>     g_flush_pipeline_cache_req {false};
+std::atomic<bool>     g_force_gc_req {false};
+
 struct FrameWindow {
 	std::array<float, FRAME_HISTORY> intervals_ms {};
 	size_t                           next         = 0;
@@ -90,6 +104,12 @@ struct FrameWindow {
 			next               = (next + 1) % FRAME_HISTORY;
 			count              = std::min(count + 1, FRAME_HISTORY);
 			max_ms             = std::max(max_ms, ms);
+			if (ms > 33.0f) {
+				g_hitches_over_33ms.fetch_add(1, std::memory_order_relaxed);
+			}
+			if (ms > 50.0f) {
+				g_hitches_over_50ms.fetch_add(1, std::memory_order_relaxed);
+			}
 			if (average_ms > 0.0f && ms > 50.0f && ms >= 2.0f * average_ms) {
 				auto& hitch = hitches[next_hitch];
 				hitch.time  = now;
@@ -759,8 +779,35 @@ bool PerformanceOverlayEnabled() noexcept {
 	return Common::DebugCounters::Enabled();
 }
 
+DiagnosticPane ActiveDiagnosticPane() noexcept {
+	if (!Common::DebugCounters::Enabled()) {
+		return DiagnosticPane::None;
+	}
+	const auto pane = static_cast<DiagnosticPane>(g_active_pane.load(std::memory_order_acquire));
+	return pane == DiagnosticPane::None ? DiagnosticPane::Performance : pane;
+}
+
 void TogglePerformanceOverlay() noexcept {
-	SetOverlayEnabled(!Common::DebugCounters::Enabled());
+	ToggleDiagnosticPane(DiagnosticPane::Performance);
+}
+
+void ToggleDiagnosticPane(DiagnosticPane pane) noexcept {
+	if (pane == DiagnosticPane::None) {
+		g_active_pane.store(static_cast<uint8_t>(DiagnosticPane::None), std::memory_order_release);
+		SetOverlayEnabled(false);
+		g_revision.fetch_add(1, std::memory_order_acq_rel);
+		return;
+	}
+	const bool currently_on = Common::DebugCounters::Enabled();
+	const auto current_pane =
+	    static_cast<DiagnosticPane>(g_active_pane.load(std::memory_order_acquire));
+	if (currently_on && current_pane == pane) {
+		g_active_pane.store(static_cast<uint8_t>(DiagnosticPane::None), std::memory_order_release);
+		SetOverlayEnabled(false);
+	} else {
+		g_active_pane.store(static_cast<uint8_t>(pane), std::memory_order_release);
+		SetOverlayEnabled(true);
+	}
 	g_revision.fetch_add(1, std::memory_order_acq_rel);
 }
 
@@ -769,9 +816,77 @@ void TogglePerformanceOverlayDetails() noexcept {
 		g_details.store(!g_details.load(std::memory_order_acquire), std::memory_order_release);
 	} else {
 		g_details.store(true, std::memory_order_release);
+		g_active_pane.store(static_cast<uint8_t>(DiagnosticPane::Performance),
+		                    std::memory_order_release);
 		SetOverlayEnabled(true);
 	}
 	g_revision.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void HudRecordPipelineHit() noexcept {
+	if (!Common::DebugCounters::Enabled()) {
+		return;
+	}
+	g_pipeline_hits.fetch_add(1, std::memory_order_relaxed);
+}
+
+void HudRecordPipelineMiss() noexcept {
+	if (!Common::DebugCounters::Enabled()) {
+		return;
+	}
+	g_pipeline_misses.fetch_add(1, std::memory_order_relaxed);
+}
+
+void HudUpdateAsyncPipelineState(uint32_t queue_depth, uint32_t active_workers,
+                                 uint32_t total_workers) noexcept {
+	g_async_queue_depth.store(queue_depth, std::memory_order_relaxed);
+	g_async_active_workers.store(active_workers, std::memory_order_relaxed);
+	g_async_total_workers.store(total_workers, std::memory_order_relaxed);
+}
+
+void HudRecordPipelineCompileUs(uint64_t compile_us) noexcept {
+	uint64_t prev = g_slowest_pipeline_us.load(std::memory_order_relaxed);
+	while (compile_us > prev && !g_slowest_pipeline_us.compare_exchange_weak(
+	                                prev, compile_us, std::memory_order_relaxed)) {
+	}
+}
+
+void HudSetActiveGuestBudgetBytes(uint64_t bytes) noexcept {
+	g_active_guest_budget_mib.store(bytes / (1024ull * 1024ull), std::memory_order_relaxed);
+}
+
+DiagnosticTelemetrySnapshot GetDiagnosticTelemetrySnapshot() noexcept {
+	DiagnosticTelemetrySnapshot s {};
+	s.pipeline_hits           = g_pipeline_hits.load(std::memory_order_relaxed);
+	s.pipeline_misses         = g_pipeline_misses.load(std::memory_order_relaxed);
+	s.async_queue_depth       = g_async_queue_depth.load(std::memory_order_relaxed);
+	s.async_active_workers    = g_async_active_workers.load(std::memory_order_relaxed);
+	s.async_total_workers     = g_async_total_workers.load(std::memory_order_relaxed);
+	s.slowest_pipeline_us     = g_slowest_pipeline_us.load(std::memory_order_relaxed);
+	s.hitches_over_33ms       = g_hitches_over_33ms.load(std::memory_order_relaxed);
+	s.hitches_over_50ms       = g_hitches_over_50ms.load(std::memory_order_relaxed);
+	const uint64_t explicit_b = g_active_guest_budget_mib.load(std::memory_order_relaxed);
+	s.active_guest_budget_mib = explicit_b > 0
+	                                ? explicit_b
+	                                : (LibKernel::Memory::GetActiveGuestMemoryBudgetBytes() /
+	                                   (1024ull * 1024ull));
+	return s;
+}
+
+void RequestHudPipelineCacheFlush() noexcept {
+	g_flush_pipeline_cache_req.store(true, std::memory_order_release);
+}
+
+bool ConsumeHudPipelineCacheFlush() noexcept {
+	return g_flush_pipeline_cache_req.exchange(false, std::memory_order_acq_rel);
+}
+
+void RequestHudForceGc() noexcept {
+	g_force_gc_req.store(true, std::memory_order_release);
+}
+
+bool ConsumeHudForceGc() noexcept {
+	return g_force_gc_req.exchange(false, std::memory_order_acq_rel);
 }
 
 uint64_t PerformanceOverlayRevision() noexcept {
@@ -836,54 +951,116 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 		Refresh(shown, graphics, now, generation);
 	}
 
+	const auto pane        = ActiveDiagnosticPane();
+	const bool interactive = (pane == DiagnosticPane::Shaders || pane == DiagnosticPane::Memory);
+	const auto telem       = GetDiagnosticTelemetrySnapshot();
+
 	const float scale = std::clamp(std::min(static_cast<float>(extent.width) / 1920.0f,
 	                                        static_cast<float>(extent.height) / 1080.0f),
 	                               0.75f, 1.5f);
 	ImGui::SetNextWindowPos({static_cast<float>(extent.width) - 12.0f * scale, 12.0f * scale},
 	                        ImGuiCond_Always, {1.0f, 0.0f});
-	ImGui::SetNextWindowBgAlpha(details ? 0.82f : 0.72f);
-	constexpr ImGuiWindowFlags FLAGS =
-	    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+	ImGui::SetNextWindowBgAlpha(details || interactive ? 0.85f : 0.72f);
+	ImGuiWindowFlags flags =
+	    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav |
 	    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
 	    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus |
 	    ImGuiWindowFlags_AlwaysAutoResize;
+	if (!interactive) {
+		flags |= ImGuiWindowFlags_NoInputs;
+	}
 	ImGui::PushFont(nullptr, (details ? 13.0f : 15.0f) * scale);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f * scale);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {10.0f * scale, 8.0f * scale});
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {8.0f * scale, 2.0f * scale});
 	ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, {4.0f * scale, 1.0f * scale});
-	if (ImGui::Begin("##kyty_performance_overlay", nullptr, FLAGS)) {
-		if (shown.fps > 0.0) {
-			ImGui::TextColored(Color(FrameTimeColor(shown.frame_ms)), "%.1f FPS   %.1f ms",
-			                   shown.fps, shown.frame_ms);
-		} else if (shown.stalled_s >= 1.0) {
-			ImGui::TextColored(Color(BAD), "No frames for %.0f s", shown.stalled_s);
-		} else {
-			ImGui::TextDisabled("Waiting for frames");
-		}
-		DrawFrameGraph(shown.history, shown.history_count, (details ? 330.0f : 260.0f) * scale,
-		               46.0f * scale);
-		if (details) {
-			// Three columns keep the detailed panel within a 720p window.
-			if (ImGui::BeginTable("##details", 3, TABLE_FLAGS)) {
-				ImGui::TableNextRow();
-				ImGui::TableNextColumn();
-				DrawFramesAndCpu(shown, extent);
-				ImGui::TableNextColumn();
-				DrawGpu(shown, graphics);
-				ImGui::TableNextColumn();
-				DrawMemoryAndIo(shown);
-				ImGui::EndTable();
+	if (ImGui::Begin("##kyty_performance_overlay", nullptr, flags)) {
+		if (pane == DiagnosticPane::Performance) {
+			if (shown.fps > 0.0) {
+				ImGui::TextColored(Color(FrameTimeColor(shown.frame_ms)),
+				                   "[F1] %.1f FPS   %.1f ms   1%% Low: %.1f", shown.fps,
+				                   shown.frame_ms, shown.low_fps);
+			} else if (shown.stalled_s >= 1.0) {
+				ImGui::TextColored(Color(BAD), "[F1] No frames for %.0f s", shown.stalled_s);
+			} else {
+				ImGui::TextDisabled("[F1] Waiting for frames");
 			}
-		} else {
-			DrawCompact(shown);
+			DrawFrameGraph(shown.history, shown.history_count, (details ? 330.0f : 260.0f) * scale,
+			               46.0f * scale);
+			ImGui::TextColored(Color(telem.hitches_over_50ms > 0 ? BAD : GOOD),
+			                   "Hitches >33ms: %llu   >50ms: %llu",
+			                   static_cast<unsigned long long>(telem.hitches_over_33ms),
+			                   static_cast<unsigned long long>(telem.hitches_over_50ms));
+			if (details) {
+				if (ImGui::BeginTable("##details", 3, TABLE_FLAGS)) {
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					DrawFramesAndCpu(shown, extent);
+					ImGui::TableNextColumn();
+					DrawGpu(shown, graphics);
+					ImGui::TableNextColumn();
+					DrawMemoryAndIo(shown);
+					ImGui::EndTable();
+				}
+			} else {
+				DrawCompact(shown);
+			}
+		} else if (pane == DiagnosticPane::Shaders) {
+			ImGui::TextColored(Color(GOOD), "[F2] Shader & Pipeline Cache Inspector");
+			const uint64_t total_lookups = telem.pipeline_hits + telem.pipeline_misses;
+			const double   hit_pct       = total_lookups > 0
+			                                   ? (100.0 * static_cast<double>(telem.pipeline_hits) /
+                                                  static_cast<double>(total_lookups))
+			                                   : 100.0;
+			ImGui::Text("Cache Hits / Misses : %llu / %llu (%.1f%%)",
+			            static_cast<unsigned long long>(telem.pipeline_hits),
+			            static_cast<unsigned long long>(telem.pipeline_misses), hit_pct);
+			ImGui::Text("Async Compile Queue : %u pending", telem.async_queue_depth);
+			ImGui::Text("Worker Pool Busy    : %u / %u threads", telem.async_active_workers,
+			            telem.async_total_workers);
+			ImGui::Text("Slowest Compile     : %.2f ms (%llu us)",
+			            static_cast<double>(telem.slowest_pipeline_us) / 1000.0,
+			            static_cast<unsigned long long>(telem.slowest_pipeline_us));
+			if (ImGui::Button("Flush Pipeline Cache")) {
+				RequestHudPipelineCacheFlush();
+			}
+		} else if (pane == DiagnosticPane::Memory) {
+			const auto  pressure = graphics.EvaluateMemoryPressure();
+			const char* tier_str = pressure.tier == MemoryPressureTier::Critical ? "CRITICAL"
+			                     : pressure.tier == MemoryPressureTier::Elevated ? "ELEVATED"
+			                                                                     : "NORMAL";
+			const ImU32 tier_col = pressure.tier == MemoryPressureTier::Critical ? BAD
+			                     : pressure.tier == MemoryPressureTier::Elevated ? MEDIUM
+			                                                                     : GOOD;
+			ImGui::TextColored(Color(tier_col), "[F3] VMA Memory Monitor — %s (%.1f%%)", tier_str,
+			                   pressure.peak_ratio * 100.0);
+			ImGui::Text("Active Guest Budget : %llu MiB",
+			            static_cast<unsigned long long>(telem.active_guest_budget_mib));
+			std::array<GraphicContext::HeapUsage, VK_MAX_MEMORY_HEAPS> heaps {};
+			const uint32_t heap_count = graphics.GetHeapUsage(heaps);
+			for (uint32_t h = 0; h < heap_count; h++) {
+				if (heaps[h].budget == 0) {
+					continue;
+				}
+				const float frac = std::clamp(
+				    static_cast<float>(static_cast<double>(heaps[h].usage) /
+				                       static_cast<double>(heaps[h].budget)),
+				    0.0f, 1.0f);
+				const auto label =
+				    Fmt("Heap %u (%s): %llu / %llu MiB", h,
+				        heaps[h].device_local ? "VRAM" : "SYS",
+				        static_cast<unsigned long long>(heaps[h].usage / (1024ull * 1024ull)),
+				        static_cast<unsigned long long>(heaps[h].budget / (1024ull * 1024ull)));
+				ImGui::ProgressBar(frac, {260.0f * scale, 16.0f * scale}, label.c_str());
+			}
+			ImGui::Text("Buffer Evictions: %llu   Texture Evictions: %llu",
+			            static_cast<unsigned long long>(Total(shown, Counter::BufferEvictions)),
+			            static_cast<unsigned long long>(Total(shown, Counter::TextureEvictions)));
+			if (ImGui::Button("Run GC Now")) {
+				RequestHudForceGc();
+			}
 		}
-#if defined(__APPLE__)
-		ImGui::TextDisabled(details ? "Cmd+Shift+P compact   Cmd+P hide"
-		                            : "Cmd+Shift+P details   Cmd+P hide");
-#else
-		ImGui::TextDisabled(details ? "Shift+F2 compact   F2 hide" : "Shift+F2 details   F2 hide");
-#endif
+		ImGui::TextDisabled("F1 Perf  |  F2 Shaders  |  F3 Memory  |  Shift+F2 Details");
 	}
 	const float bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y;
 	ImGui::End();

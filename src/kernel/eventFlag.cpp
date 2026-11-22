@@ -57,23 +57,28 @@ struct EventFlagWaitMode {
 	KernelEventFlagPrivate::ClearMode clear = KernelEventFlagPrivate::ClearMode::None;
 };
 
-EventFlagWaitMode DecodeEventFlagWaitMode(uint32_t wait_mode) {
+bool DecodeEventFlagWaitMode(uint32_t wait_mode, EventFlagWaitMode* out) {
+	if (out == nullptr || (wait_mode & ~0x33u) != 0) {
+		return false;
+	}
+
 	EventFlagWaitMode mode;
 
 	switch (wait_mode & 0xfu) {
 		case 0x01: mode.wait = KernelEventFlagPrivate::WaitMode::And; break;
 		case 0x02: mode.wait = KernelEventFlagPrivate::WaitMode::Or; break;
-		default: EXIT("unknown mode: %u\n", wait_mode);
+		default: return false;
 	}
 
 	switch (wait_mode & 0xf0u) {
 		case 0x00: mode.clear = KernelEventFlagPrivate::ClearMode::None; break;
 		case 0x10: mode.clear = KernelEventFlagPrivate::ClearMode::All; break;
 		case 0x20: mode.clear = KernelEventFlagPrivate::ClearMode::Bits; break;
-		default: EXIT("unknown mode: %u\n", wait_mode);
+		default: return false;
 	}
 
-	return mode;
+	*out = mode;
+	return true;
 }
 
 } // namespace
@@ -179,12 +184,17 @@ KernelEventFlagPrivate::Result KernelEventFlagPrivate::Wait(uint64_t bits, WaitM
 void KernelEventFlagPrivate::Set(uint64_t bits) {
 	Common::LockGuard lock(m_mutex);
 
-	EXIT_NOT_IMPLEMENTED(m_status == Status::Deleted);
+	if (m_status == Status::Deleted) {
+		return;
+	}
 
 	while (m_status != Status::Set) {
 		m_mutex.Unlock();
 		Common::Thread::SleepMicro(10);
 		m_mutex.Lock();
+		if (m_status == Status::Deleted) {
+			return;
+		}
 	}
 
 	m_bits |= bits;
@@ -195,12 +205,17 @@ void KernelEventFlagPrivate::Set(uint64_t bits) {
 void KernelEventFlagPrivate::Clear(uint64_t bits) {
 	Common::LockGuard lock(m_mutex);
 
-	EXIT_NOT_IMPLEMENTED(m_status == Status::Deleted);
+	if (m_status == Status::Deleted) {
+		return;
+	}
 
 	while (m_status != Status::Set) {
 		m_mutex.Unlock();
 		Common::Thread::SleepMicro(10);
 		m_mutex.Lock();
+		if (m_status == Status::Deleted) {
+			return;
+		}
 	}
 
 	m_bits &= bits;
@@ -209,12 +224,17 @@ void KernelEventFlagPrivate::Clear(uint64_t bits) {
 void KernelEventFlagPrivate::Cancel(uint64_t bits, int* num_waiting_threads) {
 	Common::LockGuard lock(m_mutex);
 
-	EXIT_NOT_IMPLEMENTED(m_status == Status::Deleted);
+	if (m_status == Status::Deleted) {
+		return;
+	}
 
 	while (m_status != Status::Set) {
 		m_mutex.Unlock();
 		Common::Thread::SleepMicro(10);
 		m_mutex.Lock();
+		if (m_status == Status::Deleted) {
+			return;
+		}
 	}
 
 	if (num_waiting_threads != nullptr) {
@@ -295,8 +315,11 @@ int KYTY_SYSV_ABI KernelWaitEventFlag(KernelEventFlag ef, uint64_t bit_pattern, 
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	const auto mode   = DecodeEventFlagWaitMode(wait_mode);
-	auto       result = ef->Wait(bit_pattern, mode.wait, mode.clear, result_pat, timeout);
+	EventFlagWaitMode mode {};
+	if (!DecodeEventFlagWaitMode(wait_mode, &mode)) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	auto result = ef->Wait(bit_pattern, mode.wait, mode.clear, result_pat, timeout);
 
 	int ret = OK;
 
@@ -323,8 +346,11 @@ int KYTY_SYSV_ABI KernelPollEventFlag(KernelEventFlag ef, uint64_t bit_pattern, 
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	const auto mode   = DecodeEventFlagWaitMode(wait_mode);
-	auto       result = ef->Poll(bit_pattern, mode.wait, mode.clear, result_pat);
+	EventFlagWaitMode mode {};
+	if (!DecodeEventFlagWaitMode(wait_mode, &mode)) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	auto result = ef->Poll(bit_pattern, mode.wait, mode.clear, result_pat);
 
 	int ret = OK;
 

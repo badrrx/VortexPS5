@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 
 #include "common/assert.h"
+#include "common/bootTelemetry.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -15,6 +16,7 @@
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/presentation/performanceOverlay.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/Tessellation.h"
@@ -43,7 +45,9 @@ namespace Libs::Graphics {
 
 namespace {
 
-constexpr auto DriverCacheSaveInterval = std::chrono::minutes {1};
+constexpr auto     DriverCacheSaveInterval     = std::chrono::minutes {1};
+constexpr auto     DriverCacheIdleSaveInterval = std::chrono::seconds {2};
+constexpr uint32_t DriverCacheIdleDirtyBatch   = 8u;
 
 uint8_t RemapSourceAlphaFactor(uint8_t factor) {
 	switch (static_cast<Prospero::BlendFactor>(factor)) {
@@ -55,17 +59,33 @@ uint8_t RemapSourceAlphaFactor(uint8_t factor) {
 	}
 }
 
+} // namespace
+
 vk::PolygonMode ResolvePolygonMode(const HW::ModeControl& mode, bool cull_front, bool cull_back) {
 	// PA_SU_SC_MODE_CNTL.POLY_MODE disables both per-face modes when it is zero.
 	if (mode.poly_mode == 0) {
 		return vk::PolygonMode::eFill;
 	}
-	EXIT_NOT_IMPLEMENTED(mode.poly_mode != 1);
+	if (mode.poly_mode != 1) {
+		static bool logged_poly_mode = false;
+		if (!logged_poly_mode) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Pipeline: extended poly_mode=%u — treating as dual-mode fill/line/point\n",
+			           mode.poly_mode);
+			logged_poly_mode = true;
+		}
+	}
 	if (cull_front && cull_back) {
 		return vk::PolygonMode::eFill;
 	}
 	if (!cull_front && !cull_back && mode.polymode_front_ptype != mode.polymode_back_ptype) {
-		EXIT("Pipeline: different polygon modes for two visible faces are unsupported\n");
+		static bool logged_mismatch = false;
+		if (!logged_mismatch) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Pipeline: differing front (%u) / back (%u) polygon modes — using front\n",
+			           mode.polymode_front_ptype, mode.polymode_back_ptype);
+			logged_mismatch = true;
+		}
 	}
 	// Vulkan has one polygon mode. A culled face does not constrain that mode.
 	const auto polygon_mode = cull_front ? mode.polymode_back_ptype : mode.polymode_front_ptype;
@@ -73,9 +93,14 @@ vk::PolygonMode ResolvePolygonMode(const HW::ModeControl& mode, bool cull_front,
 		case 0: return vk::PolygonMode::ePoint;
 		case 1: return vk::PolygonMode::eLine;
 		case 2: return vk::PolygonMode::eFill;
-		default: EXIT("Pipeline: invalid polygon mode %u\n", polygon_mode);
+		default:
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Pipeline: unknown polygon mode %u — falling back to Fill\n", polygon_mode);
+			return vk::PolygonMode::eFill;
 	}
 }
+
+namespace {
 
 std::string DriverCacheSignature(const vk::PhysicalDeviceProperties& properties) {
 	constexpr char hex[] = "0123456789abcdef";
@@ -261,6 +286,43 @@ std::filesystem::path ShaderStorePath() {
 
 bool GraphicsPipelineKey::operator==(const GraphicsPipelineKey& other) const {
 	return std::memcmp(this, &other, sizeof(*this)) == 0;
+}
+
+void CanonicalizeGraphicsPipelineKey(GraphicsPipelineKey& key, bool eds3_polygon_mode,
+                                     bool eds3_depth_clip, bool eds3_blend_enable,
+                                     bool eds3_blend_eq, bool eds3_write_mask) {
+	auto& sp = key.static_params;
+	if (eds3_polygon_mode) {
+		sp.polygon_mode = vk::PolygonMode::eFill;
+	}
+	if (eds3_depth_clip) {
+		sp.depth_clip_enable = true;
+	}
+	for (uint32_t i = 0; i < RENDER_COLOR_ATTACHMENTS_MAX; ++i) {
+		if (eds3_blend_enable) {
+			sp.blend_enable[i] = false;
+		}
+		if (eds3_blend_eq) {
+			sp.color_srcblend[i]       = 0;
+			sp.color_comb_fcn[i]       = 0;
+			sp.color_destblend[i]      = 0;
+			sp.alpha_srcblend[i]       = 0;
+			sp.alpha_comb_fcn[i]       = 0;
+			sp.alpha_destblend[i]      = 0;
+			sp.separate_alpha_blend[i] = false;
+		}
+		if (eds3_write_mask) {
+			sp.color_mask[i] = 0xFu;
+		}
+	}
+}
+
+void CanonicalizeGraphicsPipelineKey(GraphicsPipelineKey& key, const GraphicContext& graphics) {
+	CanonicalizeGraphicsPipelineKey(key, graphics.eds3_polygon_mode,
+	                                graphics.eds3_depth_clip_enable,
+	                                graphics.eds3_color_blend_enable,
+	                                graphics.eds3_color_blend_equation,
+	                                graphics.eds3_color_write_mask);
 }
 
 std::size_t PipelineCache::GraphicsPipelineKeyHash::operator()(const GraphicsPipelineKey& key) const {
@@ -469,13 +531,17 @@ PipelineCache::PipelineCache(GraphicContext&                         graphics,
                              ShaderRecompiler::IR::ImageHeapSource* image_heap,
                              const std::filesystem::path&           shader_store)
     : m_graphics(graphics), m_image_heap(image_heap),
-      m_next_driver_cache_save(std::chrono::steady_clock::now() + DriverCacheSaveInterval) {
+      m_next_driver_cache_save(std::chrono::steady_clock::now() + DriverCacheSaveInterval),
+      m_last_driver_cache_save(std::chrono::steady_clock::now()) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	InitializeDriverCache();
 	WarmUp(shader_store);
+	StartAsyncWorkers();
 }
 
 PipelineCache::~PipelineCache() {
+	StopAsyncWorkers();
+	DrainCompletedAsyncPipelines();
 	Save();
 	auto destroy = [this](const auto& pipelines) {
 		for (const auto& pipeline: pipelines | std::views::values) {
@@ -494,16 +560,167 @@ PipelineCache::~PipelineCache() {
 	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
 }
 
+void PipelineCache::StartAsyncWorkers() {
+	const uint32_t hw    = std::thread::hardware_concurrency();
+	const uint32_t count = std::clamp(hw / 2u, 2u, 4u);
+	m_async_workers.reserve(count);
+	for (uint32_t i = 0; i < count; i++) {
+		m_async_workers.emplace_back([this](std::stop_token stop) {
+			while (true) {
+				AsyncCompileJob job {};
+				{
+					std::unique_lock lock(m_async_mutex);
+					if (!m_async_cv.wait(lock, stop, [this] { return !m_async_queue.empty(); })) {
+						break;
+					}
+					job = m_async_queue.front();
+					m_async_queue.pop();
+				}
+				const auto active_now =
+				    m_async_active_workers.fetch_add(1, std::memory_order_relaxed) + 1u;
+				uint32_t qdepth = 0;
+				{
+					std::scoped_lock lock(m_async_mutex);
+					qdepth = static_cast<uint32_t>(m_async_queue.size());
+				}
+				HudUpdateAsyncPipelineState(qdepth, active_now,
+				                            static_cast<uint32_t>(m_async_workers.size()));
+
+				Pipeline compiled {};
+				const auto t0 = std::chrono::steady_clock::now();
+				{
+					Common::DebugCounters::ScopedTimer timer(
+					    Common::DebugCounters::Counter::PipelinesCreated,
+					    Common::DebugCounters::Counter::PipelineCreateNs,
+					    Common::DebugCounters::Peak::PipelineCreateNs);
+					CreatePipelineInternal(m_graphics, compiled, job.key, job.stages,
+					                       m_driver_cache);
+				}
+				const auto compile_us = static_cast<uint64_t>(
+				    std::chrono::duration_cast<std::chrono::microseconds>(
+				        std::chrono::steady_clock::now() - t0)
+				        .count());
+				HudRecordPipelineCompileUs(compile_us);
+				Common::BootTelemetry::Global().RecordPipelineCreated(false);
+				Common::BootTelemetry::Global().RecordShaderCompiled(compile_us);
+				const auto active_after =
+				    m_async_active_workers.fetch_sub(1, std::memory_order_relaxed) - 1u;
+				{
+					std::scoped_lock lock(m_async_mutex);
+					m_async_in_flight.erase(job.key);
+					m_async_completed.push_back(
+					    AsyncCompileResult {.key = job.key, .pipeline = compiled});
+					qdepth = static_cast<uint32_t>(m_async_queue.size());
+				}
+				HudUpdateAsyncPipelineState(qdepth, active_after,
+				                            static_cast<uint32_t>(m_async_workers.size()));
+			}
+		});
+	}
+}
+
+void PipelineCache::StopAsyncWorkers() {
+	for (auto& worker: m_async_workers) {
+		worker.request_stop();
+	}
+	m_async_cv.notify_all();
+	m_async_workers.clear();
+}
+
+void PipelineCache::DrainCompletedAsyncPipelines() {
+	std::vector<AsyncCompileResult> ready;
+	{
+		std::scoped_lock lock(m_async_mutex);
+		if (m_async_completed.empty()) {
+			return;
+		}
+		ready.swap(m_async_completed);
+	}
+	for (auto& item: ready) {
+		auto [iter, inserted] = m_graphics_pipelines.try_emplace(item.key, item.pipeline);
+		if (!inserted) {
+			m_graphics.device.destroyPipeline(item.pipeline.pipeline, nullptr);
+			m_graphics.device.destroyPipelineLayout(item.pipeline.pipeline_layout, nullptr);
+			m_graphics.device.destroyDescriptorSetLayout(item.pipeline.descriptor_set_layout,
+			                                             nullptr);
+			continue;
+		}
+		StorePipeline(item.key);
+		m_dirty_pipeline_count++;
+		CheckpointDriverCache();
+	}
+}
+
+bool PipelineCache::EnqueueAsyncGraphicsPipeline(const GraphicsPipelineKey&                key,
+                                                 const std::array<const ShaderModule*, 4>& stages) {
+	uint32_t qdepth = 0;
+	{
+		std::scoped_lock lock(m_async_mutex);
+		if (!m_async_in_flight.insert(key).second) {
+			return false;
+		}
+		m_async_queue.push(AsyncCompileJob {.key = key, .stages = stages});
+		qdepth = static_cast<uint32_t>(m_async_queue.size());
+	}
+	HudUpdateAsyncPipelineState(qdepth, m_async_active_workers.load(std::memory_order_relaxed),
+	                            static_cast<uint32_t>(m_async_workers.size()));
+	m_async_cv.notify_one();
+	return true;
+}
+
+void PipelineCache::RequestFlushDriverCache() {
+	if (m_driver_cache == nullptr) {
+		return;
+	}
+	if (m_driver_cache_saving.exchange(true, std::memory_order_acq_rel)) {
+		return;
+	}
+	const auto now           = std::chrono::steady_clock::now();
+	m_driver_cache_dirty     = false;
+	m_dirty_pipeline_count   = 0;
+	m_last_driver_cache_save = now;
+	m_next_driver_cache_save = now + DriverCacheSaveInterval;
+	m_store.Post([this] {
+		WriteDriverCache();
+		m_driver_cache_saving.store(false, std::memory_order_release);
+	});
+}
+
+void PipelineCache::OnFrameIdle() {
+	DrainCompletedAsyncPipelines();
+	if (m_driver_cache == nullptr || !m_driver_cache_dirty) {
+		return;
+	}
+	const auto now = std::chrono::steady_clock::now();
+	if (now < m_last_driver_cache_save + DriverCacheIdleSaveInterval &&
+	    m_dirty_pipeline_count < DriverCacheIdleDirtyBatch) {
+		return;
+	}
+	if (m_driver_cache_saving.exchange(true, std::memory_order_acq_rel)) {
+		return;
+	}
+	m_driver_cache_dirty     = false;
+	m_dirty_pipeline_count   = 0;
+	m_last_driver_cache_save = now;
+	m_next_driver_cache_save = now + DriverCacheSaveInterval;
+	m_store.Post([this] {
+		WriteDriverCache();
+		m_driver_cache_saving.store(false, std::memory_order_release);
+	});
+}
+
 void PipelineCache::InitializeDriverCache() {
-	const auto title_id = PipelineCacheTitleId();
+	auto title_id = PipelineCacheTitleId();
+	if (title_id.empty()) {
+		const auto snap = Common::BootTelemetry::Global().Snapshot();
+		if (!snap.title_id.empty() && snap.title_id != "UNKNOWN") {
+			title_id = snap.title_id;
+		}
+	}
 	if (title_id.empty()) {
 		return;
 	}
-	if (KYTY_BUILD != KYTY_BUILD_RELEASE) {
-		PipelineCacheLog("Vulkan pipeline cache: disabled (non-Release build)");
-		return;
-	}
-	m_driver_cache_path     = std::filesystem::path("_PipelineCache") / (title_id + ".bin");
+	m_driver_cache_path     = std::filesystem::path("cache") / "pipelines" / (title_id + ".vkcache");
 	const auto path         = Common::PathToString(m_driver_cache_path);
 	const bool cache_exists = Common::File::IsFileExisting(m_driver_cache_path);
 	if (cache_exists) {
@@ -513,34 +730,15 @@ void PipelineCache::InitializeDriverCache() {
 	}
 	std::vector<uint8_t> initial_data;
 	if (cache_exists) {
-		Common::File file(m_driver_cache_path, Common::File::Mode::Read);
-		const auto   file_size = file.IsInvalid() ? 0 : file.Size();
-		const auto   signature = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties());
-		if (file_size >= signature.size() + sizeof(uint64_t) &&
-		    file_size <= std::numeric_limits<uint32_t>::max()) {
-			std::string cached_signature(signature.size(), '\0');
-			uint64_t    payload_hash = 0;
-			initial_data.resize(file_size - signature.size() - sizeof(payload_hash));
-			uint32_t signature_read = 0;
-			uint32_t hash_read      = 0;
-			uint32_t payload_read   = 0;
-			file.Read(cached_signature.data(), static_cast<uint32_t>(cached_signature.size()),
-			          &signature_read);
-			file.Read(&payload_hash, sizeof(payload_hash), &hash_read);
-			file.Read(initial_data.data(), static_cast<uint32_t>(initial_data.size()),
-			          &payload_read);
-			file.Close();
-			if (signature_read != cached_signature.size() || hash_read != sizeof(payload_hash) ||
-			    payload_read != initial_data.size() || cached_signature != signature ||
-			    XXH3_64bits(initial_data.data(), initial_data.size()) != payload_hash) {
-				initial_data.clear();
-				PipelineCacheLog(
-				    "Vulkan pipeline cache: invalidating {} (driver or data mismatch)",
-				    path);
-			}
-		} else {
-			file.Close();
-			PipelineCacheLog("Vulkan pipeline cache: invalidating {} (invalid file size)", path);
+		const auto& props = m_graphics.GetPhysicalDeviceProperties();
+		if (!LoadVkPipelineCacheBlob(
+		        m_driver_cache_path, props.vendorID, props.deviceID,
+		        std::span<const uint8_t>(props.pipelineCacheUUID.data(), VK_UUID_SIZE),
+		        initial_data)) {
+			initial_data.clear();
+			PipelineCacheLog(
+			    "Vulkan pipeline cache: invalidating {} (driver, UUID, or checksum mismatch)",
+			    path);
 		}
 	}
 
@@ -574,11 +772,18 @@ void PipelineCache::CheckpointDriverCache() {
 		return;
 	}
 	m_driver_cache_dirty = true;
-	if (const auto now = std::chrono::steady_clock::now(); now >= m_next_driver_cache_save) {
+	if (const auto now = std::chrono::steady_clock::now();
+	    now >= m_next_driver_cache_save &&
+	    !m_driver_cache_saving.exchange(true, std::memory_order_acq_rel)) {
 		m_driver_cache_dirty     = false;
+		m_dirty_pipeline_count   = 0;
+		m_last_driver_cache_save = now;
 		m_next_driver_cache_save = now + DriverCacheSaveInterval;
 		// The cache object is internally synchronized, so pipelines may be created meanwhile.
-		m_store.Post([this] { WriteDriverCache(); });
+		m_store.Post([this] {
+			WriteDriverCache();
+			m_driver_cache_saving.store(false, std::memory_order_release);
+		});
 	}
 }
 
@@ -614,30 +819,10 @@ void PipelineCache::WriteDriverCache() const {
 		return;
 	}
 	payload.resize(size);
-	auto       prefix       = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties());
-	const auto payload_hash = XXH3_64bits(payload.data(), payload.size());
-	prefix.append(reinterpret_cast<const char*>(&payload_hash), sizeof(payload_hash));
-	if (!Common::File::CreateDirectories(m_driver_cache_path.parent_path())) {
-		PipelineCacheLog("Vulkan pipeline cache: failed to create cache directory");
-		return;
-	}
-	auto temp_path = m_driver_cache_path;
-	temp_path += ".tmp";
-	Common::File file;
-	uint32_t     prefix_written  = 0;
-	uint32_t     payload_written = 0;
-	if (file.Create(temp_path)) {
-		file.Write(prefix.data(), static_cast<uint32_t>(prefix.size()), &prefix_written);
-		file.Write(payload.data(), static_cast<uint32_t>(payload.size()), &payload_written);
-	}
-	const bool flushed = !file.IsInvalid() && file.Flush();
-	file.Close();
-	const bool written = prefix_written == prefix.size() && payload_written == payload.size() && flushed;
-	std::error_code error;
-	if (written) {
-		std::filesystem::rename(temp_path, m_driver_cache_path, error);
-	}
-	if (!written || error) {
+	const auto& props = m_graphics.GetPhysicalDeviceProperties();
+	if (!SaveVkPipelineCacheBlob(
+	        m_driver_cache_path, props.vendorID, props.deviceID,
+	        std::span<const uint8_t>(props.pipelineCacheUUID.data(), VK_UUID_SIZE), payload)) {
 		PipelineCacheLog("Vulkan pipeline cache: failed to write {}",
 		                 Common::PathToString(m_driver_cache_path));
 		return;
@@ -1058,11 +1243,17 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		}
 	}
 
-	auto [iter, inserted] = m_graphics_pipelines.try_emplace(key);
-	auto& pipeline        = iter->second;
-	if (!inserted) {
-		return pipeline;
+	CanonicalizeGraphicsPipelineKey(key, m_graphics.eds3_polygon_mode,
+	                                m_graphics.eds3_depth_clip_enable, false, false, false);
+
+	DrainCompletedAsyncPipelines();
+
+	if (const auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
+		HudRecordPipelineHit();
+		Common::BootTelemetry::Global().RecordPipelineCreated(true);
+		return iter->second;
 	}
+	HudRecordPipelineMiss();
 
 	if (graphics_debug_dump_enabled()) {
 		ShaderDbgDumpInputInfo(vs_input_info);
@@ -1071,16 +1262,8 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		}
 	}
 
-	{
-		Common::DebugCounters::ScopedTimer timer(Common::DebugCounters::Counter::PipelinesCreated,
-		                                         Common::DebugCounters::Counter::PipelineCreateNs,
-		                                         Common::DebugCounters::Peak::PipelineCreateNs);
-		CreatePipelineInternal(m_graphics, pipeline, key, stages, m_driver_cache);
-	}
-	StorePipeline(key);
-	CheckpointDriverCache();
-
-	return pipeline;
+	EnqueueAsyncGraphicsPipeline(key, stages);
+	return m_pending_pipeline_sentinel;
 }
 
 PipelineCache::Pipeline& PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info) {
@@ -1091,6 +1274,7 @@ PipelineCache::Pipeline& PipelineCache::GetComputePipeline(const ShaderComputeIn
 	auto [iter, inserted] = m_compute_pipelines.try_emplace(module.id);
 	auto& pipeline        = iter->second;
 	if (!inserted) {
+		Common::BootTelemetry::Global().RecordPipelineCreated(true);
 		return pipeline;
 	}
 
@@ -1104,8 +1288,171 @@ PipelineCache::Pipeline& PipelineCache::GetComputePipeline(const ShaderComputeIn
 		                                         Common::DebugCounters::Peak::PipelineCreateNs);
 		CreatePipelineInternal(m_graphics, pipeline, module, m_driver_cache);
 	}
+	Common::BootTelemetry::Global().RecordPipelineCreated(false);
 	CheckpointDriverCache();
 
 	return pipeline;
 }
+
+namespace {
+
+constexpr uint32_t kVkDiskCacheMagic   = 0x4B59564Bu; // "KYVK"
+constexpr uint32_t kVkDiskCacheVersion = 1u;
+
+struct VkDiskCacheHeader {
+	uint32_t magic;
+	uint32_t version;
+	uint32_t vendor_id;
+	uint32_t device_id;
+	uint8_t  driver_uuid[16];
+	uint64_t blob_size;
+	uint64_t fnv1a_hash;
+};
+
+uint64_t ComputeFnv1a64(std::span<const uint8_t> data) {
+	uint64_t h = 14695981039346656037ull;
+	for (const uint8_t b: data) {
+		h ^= b;
+		h *= 1099511628211ull;
+	}
+	return h;
+}
+
+} // namespace
+
+bool SaveVkPipelineCacheBlob(const std::filesystem::path& path, uint32_t vendor_id,
+                             uint32_t device_id, std::span<const uint8_t> driver_uuid,
+                             std::span<const uint8_t> blob) {
+	if (path.empty() || driver_uuid.size() != 16u) {
+		return false;
+	}
+	std::error_code ec;
+	if (path.has_parent_path()) {
+		std::filesystem::create_directories(path.parent_path(), ec);
+	}
+	VkDiskCacheHeader hdr {};
+	hdr.magic      = kVkDiskCacheMagic;
+	hdr.version    = kVkDiskCacheVersion;
+	hdr.vendor_id  = vendor_id;
+	hdr.device_id  = device_id;
+	std::memcpy(hdr.driver_uuid, driver_uuid.data(), 16u);
+	hdr.blob_size  = blob.size();
+	hdr.fnv1a_hash = ComputeFnv1a64(blob);
+
+	const auto tmp_path = std::filesystem::path(path.string() + ".tmp");
+	Common::File f;
+	if (!f.Create(tmp_path)) {
+		return false;
+	}
+	f.Write(&hdr, sizeof(hdr));
+	if (!blob.empty()) {
+		f.Write(blob.data(), static_cast<uint32_t>(blob.size()));
+	}
+	f.Close();
+
+	std::filesystem::rename(tmp_path, path, ec);
+	if (ec) {
+		std::filesystem::remove(path, ec);
+		ec.clear();
+		std::filesystem::rename(tmp_path, path, ec);
+	}
+	return !ec;
+}
+
+bool LoadVkPipelineCacheBlob(const std::filesystem::path& path, uint32_t vendor_id,
+                             uint32_t device_id, std::span<const uint8_t> driver_uuid,
+                             std::vector<uint8_t>& out_blob) {
+	out_blob.clear();
+	if (path.empty() || driver_uuid.size() != 16u) {
+		return false;
+	}
+	Common::File f;
+	if (!f.Open(path, Common::File::Mode::Read)) {
+		return false;
+	}
+	const auto file_size = f.Size();
+	if (file_size < sizeof(VkDiskCacheHeader)) {
+		f.Close();
+		return false;
+	}
+	VkDiskCacheHeader hdr {};
+	f.Read(&hdr, sizeof(hdr));
+	if (hdr.magic != kVkDiskCacheMagic || hdr.version != kVkDiskCacheVersion ||
+	    hdr.vendor_id != vendor_id || hdr.device_id != device_id ||
+	    std::memcmp(hdr.driver_uuid, driver_uuid.data(), 16u) != 0 ||
+	    hdr.blob_size != file_size - sizeof(VkDiskCacheHeader)) {
+		f.Close();
+		return false;
+	}
+	out_blob.resize(static_cast<size_t>(hdr.blob_size));
+	if (!out_blob.empty()) {
+		f.Read(out_blob.data(), static_cast<uint32_t>(out_blob.size()));
+	}
+	f.Close();
+	if (ComputeFnv1a64(out_blob) != hdr.fnv1a_hash) {
+		out_blob.clear();
+		return false;
+	}
+	return true;
+}
+
+AsyncPipelinePrewarmer::AsyncPipelinePrewarmer(uint32_t worker_count) {
+	const uint32_t count = std::max(1u, worker_count);
+	m_workers.reserve(count);
+	for (uint32_t i = 0; i < count; ++i) {
+		m_workers.emplace_back([this](std::stop_token token) { WorkerLoop(token); });
+	}
+}
+
+AsyncPipelinePrewarmer::~AsyncPipelinePrewarmer() {
+	for (auto& w: m_workers) {
+		w.request_stop();
+	}
+	m_cv.notify_all();
+	m_workers.clear();
+}
+
+void AsyncPipelinePrewarmer::Enqueue(std::function<void()> job) {
+	{
+		std::scoped_lock lock(m_mutex);
+		m_jobs.push(std::move(job));
+	}
+	m_cv.notify_one();
+}
+
+void AsyncPipelinePrewarmer::WaitIdle() {
+	std::unique_lock lock(m_mutex);
+	m_idle_cv.wait(lock, [&] { return m_jobs.empty() && m_in_flight == 0; });
+}
+
+void AsyncPipelinePrewarmer::WorkerLoop(std::stop_token token) {
+	while (!token.stop_requested()) {
+		std::function<void()> job;
+		{
+			std::unique_lock lock(m_mutex);
+			m_cv.wait(lock, token, [&] { return !m_jobs.empty(); });
+			if (token.stop_requested() && m_jobs.empty()) {
+				return;
+			}
+			if (m_jobs.empty()) {
+				continue;
+			}
+			job = std::move(m_jobs.front());
+			m_jobs.pop();
+			++m_in_flight;
+		}
+		if (job) {
+			job();
+		}
+		m_completed.fetch_add(1, std::memory_order_release);
+		{
+			std::scoped_lock lock(m_mutex);
+			--m_in_flight;
+			if (m_jobs.empty() && m_in_flight == 0) {
+				m_idle_cv.notify_all();
+			}
+		}
+	}
+}
+
 } // namespace Libs::Graphics

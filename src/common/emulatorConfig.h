@@ -28,6 +28,8 @@ enum class PresentMode { Fifo, Mailbox, Immediate };
 
 enum class PssrUpscaler { Linear, DLSS, FSR };
 
+enum class PresentUpscalerMode : uint8_t { Off = 0, CAS = 1, FSR1 = 2 };
+
 using Keymap = std::vector<std::string>;
 using ControllerColor = std::array<uint8_t, 3>;
 
@@ -97,6 +99,12 @@ struct ConfigOptions {
 	bool                   readback_storage_images     = false;
 	bool                   sync_raw_image_buffers      = false;
 	uint32_t               flush_draws                 = 0; // 0 is off
+	uint32_t               guest_memory_mb             = 0; // 0 = auto host-aware budget
+	PresentUpscalerMode    present_upscaler            = PresentUpscalerMode::Off;
+	float                  upscaler_sharpness          = 0.6f; // 0.0 - 1.0
+	float                  resolution_scale            = 1.0f; // 1.0, 1.5, 2.0
+	uint32_t               fps_cap                     = 0;    // 0 = native/vblank
+	std::vector<std::string> enabled_patches;
 	bool                   tessellation_enabled        = false;
 	bool                   occlusion_queries_enabled   = false;
 	bool                   relaxed_shader_float        = false;
@@ -178,6 +186,15 @@ bool ReadbackTiledImagesEnabled();
 bool ReadbackStorageImagesEnabled();
 bool SyncRawImageBuffersEnabled();
 uint32_t GetFlushDraws();
+uint32_t GetGuestMemoryBudgetMb();
+PresentUpscalerMode GetPresentUpscalerMode() noexcept;
+void                SetPresentUpscalerMode(PresentUpscalerMode mode) noexcept;
+float               GetUpscalerSharpness() noexcept;
+void                SetUpscalerSharpness(float sharpness) noexcept;
+float               GetResolutionScale() noexcept;
+void                SetResolutionScale(float scale) noexcept;
+uint32_t            GetFpsCap() noexcept;
+const std::vector<std::string>& GetEnabledPatches();
 bool TessellationEnabled();
 bool OcclusionQueriesEnabled();
 bool RelaxedShaderFloatEnabled();

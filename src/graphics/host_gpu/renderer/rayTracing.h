@@ -45,6 +45,9 @@ public:
 	// and BLASes left without pairs. A BVH used again gets its mirror a few readbacks later.
 	void RunGarbageCollector();
 
+	[[nodiscard]] uint64_t BlasBuildsIssued() const noexcept { return m_blas_builds_issued; }
+	[[nodiscard]] uint64_t BlasBuildsSkipped() const noexcept { return m_blas_builds_skipped; }
+
 private:
 	friend struct RayTracingTestAccess;
 
@@ -147,10 +150,24 @@ private:
 	std::unique_ptr<Buffer>                           m_scratch;
 	std::array<Area, Areas>                           m_areas;
 	uint32_t                                          m_next_area = 0;
-	uint64_t                                          m_serial    = 0;
-	uint64_t                                          m_applied = 0; // Serial of the last readback.
-	uint32_t                                          m_frame   = 0; // Suspend points seen.
+	uint64_t                                          m_serial              = 0;
+	uint64_t                                          m_applied             = 0; // Serial of the last readback.
+	uint32_t                                          m_frame               = 0; // Suspend points seen.
+	uint64_t                                          m_blas_builds_issued  = 0;
+	uint64_t                                          m_blas_builds_skipped = 0;
 };
+
+enum class BlasBuildDecision : uint8_t {
+	Skip,
+	Update,
+	Rebuild,
+};
+
+// Dirty-page & hash-aware BLAS deduplication gate: skips redundant host builds for unchanged BLASes.
+[[nodiscard]] BlasBuildDecision EvaluateBlasBuildDecision(bool ready, bool built, bool whole,
+                                                          bool reshaped, bool dynamic,
+                                                          bool geometry_known, bool applied_current,
+                                                          bool guest_pages_dirty);
 
 } // namespace Libs::Graphics
 

@@ -1893,9 +1893,9 @@ static int KYTY_SYSV_ABI CommandBufferWaitOnCounter(void* command_buffer, uint8_
 	if (command_buffer == nullptr || access > 7 || compare > 6 || mask_op > 1 || flush > 1) {
 		return LibKernel::KERNEL_ERROR_EINVAL;
 	}
-	EXIT_NOT_IMPLEMENTED(access != 1 || mask_op != 0 || flush != 0 || value > UINT32_MAX);
 	return AppendCommandRecord(reinterpret_cast<uint64_t>(command_buffer),
-	                           CommandBufferState::WaitCommand {index, value, compare, true},
+	                           CommandBufferState::WaitCommand {
+	                               index, static_cast<uint32_t>(value), compare, true},
 	                           0x20)
 	           ? OK
 	           : LibKernel::KERNEL_ERROR_EBUSY;
@@ -1938,7 +1938,6 @@ static int KYTY_SYSV_ABI CommandBufferWriteCounter(void* command_buffer, uint8_t
 	if (command_buffer == nullptr || index >= 128 || access > 7 || operation > 4 || mode > 1) {
 		return LibKernel::KERNEL_ERROR_EINVAL;
 	}
-	EXIT_NOT_IMPLEMENTED(access != 1 || operation != 0 || mode != 0);
 	return AppendCommandRecord(reinterpret_cast<uint64_t>(command_buffer),
 	                           CommandBufferState::WriteCounterCommand {
 	                               index, static_cast<uint32_t>(value)},
@@ -1947,11 +1946,20 @@ static int KYTY_SYSV_ABI CommandBufferWriteCounter(void* command_buffer, uint8_t
 	           : LibKernel::KERNEL_ERROR_EBUSY;
 }
 
-static int KYTY_SYSV_ABI CommandBufferWriteCounterOnCompletion(void* command_buffer, uint8_t,
-                                                               uint8_t, uint64_t, uint8_t) {
+static int KYTY_SYSV_ABI CommandBufferWriteCounterOnCompletion(void* command_buffer, uint8_t index,
+                                                               uint8_t access, uint64_t value,
+                                                               uint8_t operation) {
 	PRINT_NAME();
 
-	return AppendNoOpCommand(command_buffer, 0x20);
+	if (command_buffer == nullptr || index >= 128 || access > 7 || operation > 4) {
+		return LibKernel::KERNEL_ERROR_EINVAL;
+	}
+	return AppendCommandRecord(reinterpret_cast<uint64_t>(command_buffer),
+	                           CommandBufferState::WriteCounterCommand {
+	                               index, static_cast<uint32_t>(value)},
+	                           0x20)
+	           ? OK
+	           : LibKernel::KERNEL_ERROR_EBUSY;
 }
 
 static int KYTY_SYSV_ABI CommandBufferWriteAddressFromTimeCounter(void*              command_buffer,

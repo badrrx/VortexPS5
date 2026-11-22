@@ -400,8 +400,9 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	}
 
 	// Rect lists are drawn without culling.
+	const bool        rect_list = Prospero::IsRectList(buffer.GetUserConfig().GetPrimType());
 	vk::CullModeFlags cull_mode {};
-	if (!Prospero::IsRectList(buffer.GetUserConfig().GetPrimType())) {
+	if (!rect_list) {
 		if (mode.cull_front) {
 			cull_mode |= vk::CullModeFlagBits::eFront;
 		}
@@ -412,6 +413,10 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	dynamic_state.SetCullMode(cull_mode);
 	dynamic_state.SetFrontFace(mode.face ? vk::FrontFace::eClockwise
 	                                     : vk::FrontFace::eCounterClockwise);
+	dynamic_state.SetPolygonMode(
+	    ResolvePolygonMode(mode, !rect_list && mode.cull_front, !rect_list && mode.cull_back));
+	const auto& clip = buffer.GetRegisters().GetClipControl();
+	dynamic_state.SetDepthClipEnable(clip.IsZClipEnabled());
 
 	dynamic_state.SetStencilTestEnabled(depth.stencil_test_enable);
 	if (depth.stencil_test_enable) {
@@ -490,7 +495,13 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			depth.load_clear_aspects |= vk::ImageAspectFlagBits::eStencil;
 		if (meta_clear &&
 		    !cache.TouchMeta(metadata.range.address, depth.desc.view_info.base_layer, false)) {
-			EXIT("failed to consume HTile clear state\n");
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "RenderDraw: HTile clear state could not be consumed at 0x%016" PRIx64
+				           " layer=%u — falling back to explicit depth/stencil clear\n",
+				           metadata.range.address, depth.desc.view_info.base_layer);
+			}
 		}
 		auto& image = cache.GetImage(depth.image_id);
 		EXIT_IF(image_view == nullptr || image.backing.samples != depth.desc.info.samples);
@@ -789,8 +800,16 @@ static bool GetDrawTopology(const HW::UserConfig& ucfg, vk::PrimitiveTopology& t
 
 static bool ResolvePrimitiveRestart(const CommandBuffer& buffer,
                                     const DrawIndexBufferSource& source) {
-	const auto control = buffer.GetUserConfig().GetPrimitiveResetControl();
-	EXIT_NOT_IMPLEMENTED((control & ~0x3u) != 0);
+	const auto raw_control = buffer.GetUserConfig().GetPrimitiveResetControl();
+	if ((raw_control & ~0x3u) != 0) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "RenderDraw: masking extended primitive_reset_control=0x%08" PRIx32 "\n",
+			           raw_control);
+		}
+	}
+	const auto control = raw_control & 0x3u;
 	if ((control & 0x1u) == 0) {
 		return false;
 	}
@@ -813,15 +832,24 @@ static bool ResolvePrimitiveRestart(const CommandBuffer& buffer,
 		return true;
 	}
 
-	// A game can set a custom reset value without using it in the index buffer.
-	// Keep restart off in that case; fail if we actually find the value.
-	// Scan before preparing draw resources: readback can restart the command buffer.
-	EXIT_NOT_IMPLEMENTED(source.address == 0);
+	// Null index address (e.g. indirect/zero-size draw) has no index buffer to scan.
+	if (source.address == 0 || source.size == 0) {
+		return false;
+	}
 	const auto* indices = reinterpret_cast<const uint8_t*>(source.address);
-	for (uint64_t offset = 0; offset < source.size; offset += element_size) {
+	for (uint64_t offset = 0; offset + element_size <= source.size; offset += element_size) {
 		uint32_t index = 0;
 		std::memcpy(&index, indices + offset, element_size);
-		EXIT_NOT_IMPLEMENTED(index == restart_index);
+		if (index == restart_index) {
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "RenderDraw: custom primitive restart index 0x%x encountered — "
+				           "falling back to native primitive restart\n",
+				           restart_index);
+			}
+			return true;
+		}
 	}
 	return false;
 }
@@ -966,9 +994,18 @@ static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_
 				               static_cast<uint32_t>(emit.vertex_offset), emit.first_instance);
 			}
 			break;
-		case Prospero::PrimitiveType::kQuadListLegacy:
-			EXIT_NOT_IMPLEMENTED((draw.index_count & 0x3u) != 0);
-			for (uint32_t i = 0; i < draw.index_count; i += 4) {
+		case Prospero::PrimitiveType::kQuadListLegacy: {
+			if ((draw.index_count & 0x3u) != 0) {
+				static std::atomic<uint32_t> log_count {0};
+				if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "RenderDraw: kQuadListLegacy index_count=%u not multiple of 4 — "
+					           "discarding trailing vertices\n",
+					           draw.index_count);
+				}
+			}
+			const uint32_t aligned_count = draw.index_count & ~0x3u;
+			for (uint32_t i = 0; i < aligned_count; i += 4) {
 				if (draw.indexed) {
 					vk_buffer.drawIndexed(4, draw.instance_count, i, emit.vertex_offset,
 					                      emit.first_instance);
@@ -979,7 +1016,16 @@ static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_
 				}
 			}
 			break;
-		default: EXIT("unknown primitive type: %u\n", static_cast<uint32_t>(ucfg.GetPrimType()));
+		}
+		default: {
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "RenderDraw: skipping draw with unknown primitive type=%u\n",
+				           static_cast<uint32_t>(ucfg.GetPrimType()));
+			}
+			break;
+		}
 	}
 }
 
@@ -1125,6 +1171,9 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 		EXIT_IF((args_buffer.second & 3u) != 0);
 	}
 	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(buffer, state, m_targets);
+	if (pipeline.pipeline == nullptr) {
+		return;
+	}
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering = AcquireRenderTargets(buffer, m_targets.colors, m_targets.color_count,
 	                                            m_targets.depth, feedback_aspects, stages);
@@ -1321,14 +1370,20 @@ bool RenderExecutor::DrawIndex(CommandBuffer& buffer, const DrawIndexArgs& args)
 		case Prospero::IndexType::kIndex16: index_source.guest_element_size = 2; break;
 		case Prospero::IndexType::kIndex32: index_source.guest_element_size = 4; break;
 		case Prospero::IndexType::kIndex8: index_source.guest_element_size = 1; break;
-		default: EXIT("unknown index_type_and_size: %u\n", args.index_type_and_size);
+		default:
+			LOGF_COLOR(Log::Color::Yellow,
+			           "RenderDraw: skipping draw with unknown index_type_and_size=%u\n",
+			           args.index_type_and_size);
+			return true;
 	}
 	index_source.size = static_cast<uint64_t>(args.index_count) * index_source.guest_element_size;
 	state.primitive_restart_enable = ResolvePrimitiveRestart(buffer, index_source);
 
 	std::vector<uint16_t> expanded_indices;
 	if (index_source.guest_element_size == 1) {
-		EXIT_NOT_IMPLEMENTED(args.index_addr == nullptr);
+		if (args.index_addr == nullptr) {
+			return true;
+		}
 		const auto* src = static_cast<const uint8_t*>(args.index_addr);
 		expanded_indices.resize(args.index_count);
 		for (uint32_t i = 0; i < args.index_count; i++) {

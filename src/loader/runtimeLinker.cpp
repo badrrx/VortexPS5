@@ -1,8 +1,10 @@
 #include "loader/runtimeLinker.h"
 
 #include "common/assert.h"
+#include "common/bootTelemetry.h"
 #include "common/common.h"
 #include "common/debugCounters.h"
+#include "common/nidTriage.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/fpEnv.h"
@@ -158,6 +160,7 @@ static uint64_t RegisterStubbedImport(uint32_t index, const Program* program,
 	record.type        = ri.type;
 	record.bind        = ri.bind;
 	record.program     = Common::PathToString(program->file_name);
+	Common::NidTriageTracker::Global().RecordImport(record.name, record.program);
 	g_stubbed_imports.push_back(record);
 	const auto record_id                     = g_stubbed_imports.size() - 1;
 	const auto thunk                         = AllocateUnresolvedImportThunk(record_id);
@@ -167,6 +170,10 @@ static uint64_t RegisterStubbedImport(uint32_t index, const Program* program,
 
 static KYTY_SYSV_ABI uint64_t UnresolvedImportStub(uint64_t record_id) {
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::UnresolvedImportCalls);
+	if (record_id < g_stubbed_imports.size()) {
+		const auto& rec = g_stubbed_imports[record_id];
+		Common::NidTriageTracker::Global().RecordCall(rec.name, rec.program);
+	}
 	const auto log_index = g_unresolved_stub_call_log_count.fetch_add(1);
 	if (log_index < 1024) {
 		if (record_id < g_stubbed_imports.size()) {
@@ -795,6 +802,10 @@ static RelocationInfo GetRelocationInfo(Elf64_Rela* r, Program* program) {
 	ret.bind_self        = false;
 
 	switch (type) {
+		case R_X86_64_NONE:
+			ret.value    = 0;
+			ret.resolved = true;
+			break;
 		case R_X86_64_GLOB_DAT:
 		case R_X86_64_JUMP_SLOT: addend = 0; [[fallthrough]];
 		case R_X86_64_64: {
@@ -804,10 +815,19 @@ static RelocationInfo GetRelocationInfo(Elf64_Rela* r, Program* program) {
 			uint64_t     symbol_vaddr = 0;
 			SymbolRecord sr {};
 			switch (sym_type) {
-				case STT_NOTYPE: ret.type = SymbolType::NoType; break;
-				case STT_FUNC: ret.type = SymbolType::Func; break;
-				case STT_OBJECT: ret.type = SymbolType::Object; break;
-				default: EXIT("unknown symbol type: %d\n", (int)sym_type);
+				case STT_NOTYPE:
+				case STT_SECTION: ret.type = SymbolType::NoType; break;
+				case STT_FUNC:
+				case STT_GNU_IFUNC: ret.type = SymbolType::Func; break;
+				case STT_OBJECT:
+				case STT_COMMON: ret.type = SymbolType::Object; break;
+				case STT_TLS: ret.type = SymbolType::TlsModule; break;
+				default:
+					LOGF_COLOR(Log::Color::Yellow,
+					           "Relocate: unknown symbol type %d — treating as NoType\n",
+					           static_cast<int>(sym_type));
+					ret.type = SymbolType::NoType;
+					break;
 			}
 			switch (bind) {
 				case STB_LOCAL:
@@ -815,13 +835,22 @@ static RelocationInfo GetRelocationInfo(Elf64_Rela* r, Program* program) {
 					ret.bind     = BindType::Local;
 					break;
 				case STB_GLOBAL: ret.bind = BindType::Global; [[fallthrough]];
-				case STB_WEAK: {
+				case STB_WEAK:
+				case STB_GNU_UNIQUE: {
 					ret.bind = (ret.bind == BindType::Unknown ? BindType::Weak : ret.bind);
 					ret.name = names + sym.st_name;
 					program->rt->Resolve(ret.name, ret.type, program, &sr, &ret.bind_self);
 					symbol_vaddr = sr.vaddr;
 				} break;
-				default: EXIT("unknown bind: %d\n", (int)bind);
+				default:
+					LOGF_COLOR(Log::Color::Yellow,
+					           "Relocate: unknown symbol bind %d — treating as Weak\n",
+					           static_cast<int>(bind));
+					ret.bind = BindType::Weak;
+					ret.name = names + sym.st_name;
+					program->rt->Resolve(ret.name, ret.type, program, &sr, &ret.bind_self);
+					symbol_vaddr = sr.vaddr;
+					break;
 			}
 			ret.resolved = (symbol_vaddr != 0);
 			ret.value    = (ret.resolved ? symbol_vaddr + addend : 0);
@@ -839,14 +868,45 @@ static RelocationInfo GetRelocationInfo(Elf64_Rela* r, Program* program) {
 			ret.bind     = BindType::Local;
 			ret.dbg_name = Common::PathToString(program->file_name);
 			break;
-		default: EXIT("unknown type: %d\n", (int)type);
+		case R_X86_64_DTPOFF64:
+		case R_X86_64_TPOFF64: {
+			const auto sym = symbols[symbol];
+			ret.value      = sym.st_value + addend;
+			ret.resolved   = true;
+			ret.type       = SymbolType::TlsModule;
+			ret.bind       = BindType::Local;
+			ret.dbg_name   = Common::PathToString(program->file_name);
+		} break;
+		default:
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Relocate: unsupported relocation type %u at offset 0x%016" PRIx64
+			           " — leaving unresolved\n",
+			           static_cast<unsigned>(type), static_cast<uint64_t>(r->r_offset));
+			ret.resolved = false;
+			ret.value    = 0;
+			break;
 	}
 
 	return ret;
 }
 
+void EvaluateRelocationForTest(Elf64_Rela* r, Program* program, uint64_t* out_value,
+                               bool* out_resolved) {
+	const auto ri = GetRelocationInfo(r, program);
+	if (out_value != nullptr) {
+		*out_value = ri.value;
+	}
+	if (out_resolved != nullptr) {
+		*out_resolved = ri.resolved;
+	}
+}
+
 static bool RelocateRecord(uint32_t index, Elf64_Rela* r, Program* program, bool jmprela_table) {
 	KYTY_PROFILER_FUNCTION();
+
+	if (r->GetType() == R_X86_64_NONE) {
+		return true;
+	}
 
 	const auto ri      = GetRelocationInfo(r, program);
 	auto       value   = ri.value;
@@ -1065,8 +1125,6 @@ uint64_t RuntimeLinker::GetProcParam() {
 void RuntimeLinker::DbgDump(const std::string& folder) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-
 	Common::LockGuard lock(m_mutex);
 
 	for (const auto* p: m_programs) {
@@ -1188,7 +1246,6 @@ void RuntimeLinker::UnloadProgram(Program* program) {
 }
 
 RuntimeLinker::RuntimeLinker(): m_symbols(std::make_unique<SymbolDatabase>()) {
-	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 }
 
 RuntimeLinker::~RuntimeLinker() {
@@ -1200,7 +1257,7 @@ Program* RuntimeLinker::LoadProgram(const std::filesystem::path& elf_name) {
 
 	Common::LockGuard lock(m_mutex);
 
-	static int32_t id_seq = 0;
+	static std::atomic<int32_t> id_seq {0};
 
 	LOGF("Loading: %s\n", Common::PathToString(elf_name).c_str());
 
@@ -1218,6 +1275,7 @@ Program* RuntimeLinker::LoadProgram(const std::filesystem::path& elf_name) {
 		LoadProgramToMemory(program);
 		ParseProgramDynamicInfo(program);
 		CreateSymbolDatabase(program);
+		Common::BootTelemetry::Global().MarkElfLoaded();
 	} else {
 		EXIT("elf is not valid: %s\n", Common::PathToString(elf_name).c_str());
 	}
@@ -1238,8 +1296,6 @@ Program* RuntimeLinker::LoadProgram(const std::filesystem::path& elf_name) {
 }
 
 void RuntimeLinker::SaveMainProgram(const std::filesystem::path& elf_name) {
-	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-
 	Common::LockGuard lock(m_mutex);
 
 	for (const auto* p: m_programs) {
@@ -1253,8 +1309,6 @@ void RuntimeLinker::SaveMainProgram(const std::filesystem::path& elf_name) {
 }
 
 void RuntimeLinker::SaveProgram(Program* program, const std::filesystem::path& elf_name) {
-	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-
 	Common::LockGuard lock(m_mutex);
 
 	if (auto it = std::find(m_programs.begin(), m_programs.end(), program);
@@ -1326,6 +1380,12 @@ void RuntimeLinker::Clear() {
 	// EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 
 	Common::LockGuard lock(m_mutex);
+	if (!g_stubbed_imports.empty()) {
+		const auto summary = Common::NidTriageTracker::Global().FormatConsoleSummary();
+		printf("%s", summary.c_str());
+		LOGF("%s", summary.c_str());
+		(void)Common::NidTriageTracker::Global().ExportJsonReport("missing_nids_report.json");
+	}
 	GamePatch::Clear();
 
 	for (auto* p: m_programs) {
@@ -1910,7 +1970,11 @@ void RuntimeLinker::ParseProgramDynamicInfo(Program* program) {
 	GetDynValue(elf, &jmprel_type, DT_OS_PLTREL);
 	GetDynValue(elf, &jmprel_type, DT_PLTREL);
 
-	EXIT_NOT_IMPLEMENTED(jmprel_type != DT_RELA);
+	if (jmprel_type != 0 && jmprel_type != DT_RELA) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "SetupDynamicInfo: unexpected DT_PLTREL type=%" PRId64 " — skipping PLT relocs\n",
+		           static_cast<int64_t>(jmprel_type));
+	}
 	if (jmprel_type == DT_RELA) {
 		EXIT_NOT_IMPLEMENTED(elf->HasDynValue(DT_OS_JMPREL) && elf->HasDynValue(DT_JMPREL));
 		EXIT_NOT_IMPLEMENTED(elf->HasDynValue(DT_OS_PLTRELSZ) && elf->HasDynValue(DT_PLTRELSZ));
@@ -1939,8 +2003,12 @@ void RuntimeLinker::ParseProgramDynamicInfo(Program* program) {
 	GetDynValue(elf, &program->dynamic_info->flags, DT_FLAGS);
 	GetDynValue(elf, &program->dynamic_info->textrel, DT_TEXTREL);
 
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->debug != 0);
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->textrel != 0);
+	if (program->dynamic_info->debug != 0 || program->dynamic_info->textrel != 0) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "SetupDynamicInfo: ignoring DT_DEBUG=%" PRIu64 " DT_TEXTREL=%" PRIu64 "\n",
+		           static_cast<uint64_t>(program->dynamic_info->debug),
+		           static_cast<uint64_t>(program->dynamic_info->textrel));
+	}
 
 	uint64_t so_name = 0;
 	GetDynValue(elf, &so_name, DT_SONAME);
@@ -1986,11 +2054,36 @@ void RuntimeLinker::Relocate(Program* program) {
 	LOGF_COLOR(Log::Color::White, "--- Relocate program: %s ---\n",
 	           Common::PathToString(program->file_name).c_str());
 
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->symbol_table_entry_size != sizeof(Elf64_Sym));
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->rela_table_entry_size != sizeof(Elf64_Rela));
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->jmprela_table == nullptr);
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->rela_table == nullptr);
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->symbol_table == nullptr);
+	if (program->dynamic_info->symbol_table_entry_size != 0 &&
+	    program->dynamic_info->symbol_table_entry_size != sizeof(Elf64_Sym)) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "Relocate: unexpected symtab entry size=%" PRIu64 "\n",
+		           static_cast<uint64_t>(program->dynamic_info->symbol_table_entry_size));
+		return;
+	}
+	if (program->dynamic_info->rela_table_entry_size != 0 &&
+	    program->dynamic_info->rela_table_entry_size != sizeof(Elf64_Rela)) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "Relocate: unexpected rela entry size=%" PRIu64 "\n",
+		           static_cast<uint64_t>(program->dynamic_info->rela_table_entry_size));
+		return;
+	}
+	if (program->dynamic_info->jmprela_table_size != 0 &&
+	    program->dynamic_info->jmprela_table == nullptr) {
+		LOGF_COLOR(Log::Color::Yellow, "Relocate: missing jmprela_table with non-zero size\n");
+		return;
+	}
+	if (program->dynamic_info->rela_table_total_size != 0 &&
+	    program->dynamic_info->rela_table == nullptr) {
+		LOGF_COLOR(Log::Color::Yellow, "Relocate: missing rela_table with non-zero size\n");
+		return;
+	}
+	if (program->dynamic_info->symbol_table == nullptr &&
+	    (program->dynamic_info->rela_table_total_size != 0 ||
+	     program->dynamic_info->jmprela_table_size != 0)) {
+		LOGF_COLOR(Log::Color::Yellow, "Relocate: missing symbol_table\n");
+		return;
+	}
 
 	const auto rela_count = static_cast<uint32_t>(
 	    program->dynamic_info->rela_table_total_size / sizeof(Elf64_Rela));

@@ -145,10 +145,13 @@ static int KYTY_SYSV_ABI SystemServiceParamGetString(int param_id, char* buf, si
 		return SYSTEM_SERVICE_ERROR_PARAMETER;
 	}
 
-	const char* value = nullptr;
+	const char* value = "";
 	switch (param_id) {
 		case PARAM_ID_SYSTEM_NAME: value = "Kyty"; break;
-		default: EXIT("unknown string param_id: %d\n", param_id);
+		default:
+			LOGF_COLOR(Log::Color::Yellow, " unsupported string param_id %d, using empty string\n",
+			           param_id);
+			break;
 	}
 
 	const auto len = std::strlen(value);

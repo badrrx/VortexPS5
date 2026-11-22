@@ -2,8 +2,10 @@
 
 #include "common/abi.h"
 #include "common/assert.h"
+#include "common/bootTelemetry.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/gameProfile.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/singleton.h"
@@ -55,6 +57,11 @@ static void PrintSystemInfo() {
 	     std::thread::hardware_concurrency());
 }
 
+static void KytyQuickExitFlush() {
+	(void)Common::BootTelemetry::Global().FlushIfActive();
+	Common::Subsystems::EmergencyShutdownActive();
+}
+
 static void KytyClose() {
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
 
@@ -62,6 +69,7 @@ static void KytyClose() {
 
 	LOGF("done!\n");
 
+	(void)Common::BootTelemetry::Global().FlushIfActive();
 	Common::Subsystems::EmergencyShutdownActive();
 }
 
@@ -165,12 +173,14 @@ void Run(const RunOptions& options) {
 	if (!title_id.empty()) {
 		Log::WriteToConsoleAndLog(fmt::format("Title ID: {}\n", title_id));
 	}
+	Common::BootTelemetry::Global().BeginSession(title_id.empty() ? "UNKNOWN" : title_id,
+	                                             Common::PathToGenericString(options.elf));
 
 	int ok = atexit(KytyClose);
 	EXIT_NOT_IMPLEMENTED(ok != 0);
 
 	// Guest threads are still running, so skip KytyClose() and only flush emergency state.
-	ok = at_quick_exit(Common::Subsystems::EmergencyShutdownActive);
+	ok = at_quick_exit(KytyQuickExitFlush);
 	EXIT_NOT_IMPLEMENTED(ok != 0);
 
 	// /hostapp mounts the same folder writable.
@@ -185,7 +195,17 @@ void Run(const RunOptions& options) {
 
 	LoadElf(options.elf);
 
-	Execute(options.game_patch);
+	std::filesystem::path effective_patch = options.game_patch;
+	if (effective_patch.empty() && !title_id.empty()) {
+		const auto auto_patch = Common::PatchBundlePath(title_id);
+		if (Common::File::IsFileExisting(auto_patch)) {
+			effective_patch = auto_patch;
+			LOGF("Auto-detected per-game patch bundle: %s\n",
+			     Common::PathToString(auto_patch).c_str());
+		}
+	}
+
+	Execute(effective_patch);
 }
 
 } // namespace Emulator

@@ -194,13 +194,21 @@ static void HwCtxSetDepthMetadataRegister(CommandProcessor& cp, uint32_t, uint32
 static void IgnoreRegister(CommandProcessor&, uint32_t, uint32_t) {}
 
 static void HwCtxSetDepthShadingRateEncodingRegister(CommandProcessor& cp, uint32_t value) {
-	const auto shading_rate_encoding =
+	auto shading_rate_encoding =
 	    KYTY_PM4_GET(value, DB_SHADING_RATE_ENCODING, SHADING_RATE_ENCODING);
-	EXIT_NOT_IMPLEMENTED(shading_rate_encoding > 2u);
+	if (shading_rate_encoding > 2u) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "PM4: clamping extended DB_SHADING_RATE_ENCODING=%u to 2\n",
+			           shading_rate_encoding);
+		}
+		shading_rate_encoding = 2u;
+	}
 
-	auto& ctx                       = cp.GetCtx();
-	auto  target                    = ctx.GetDepthRenderTarget();
-	target.shading_rate_encoding    = static_cast<uint8_t>(shading_rate_encoding);
+	auto& ctx                    = cp.GetCtx();
+	auto  target                 = ctx.GetDepthRenderTarget();
+	target.shading_rate_encoding = static_cast<uint8_t>(shading_rate_encoding);
 	ctx.SetDepthRenderTarget(target);
 }
 
@@ -338,9 +346,16 @@ static void HwShSetCsRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_
 		case Pm4::COMPUTE_RESOURCE_LIMITS:
 		case Pm4::COMPUTE_TMPRING_SIZE:
 		case Pm4::COMPUTE_PACE_ID: break;
-		default:
-			EXIT("unsupported compute SH register 0x%08" PRIx32 " = 0x%08" PRIx32 "\n", cmd_offset,
-			     value);
+		default: {
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "PM4: ignoring extended/unknown compute SH register 0x%08" PRIx32
+				           " = 0x%08" PRIx32 "\n",
+				           cmd_offset, value);
+			}
+			break;
+		}
 	}
 
 	cp.GetShCtx().SetCsShader(cs_regs);
@@ -348,7 +363,9 @@ static void HwShSetCsRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_
 
 KYTY_HW_SH_PARSER(HwShSetCsRegisters) {
 	auto reg_num = (cmd_id >> 16u) & 0x3fffu;
-	EXIT_NOT_IMPLEMENTED(reg_num == 0);
+	if (reg_num == 0) {
+		return 0;
+	}
 
 	for (uint32_t i = 0; i < reg_num; i++) {
 		HwShSetCsRegister(cp, cmd_offset + i, buffer[i]);
@@ -361,9 +378,17 @@ KYTY_HW_SH_PARSER(HwShSetCsUserSgpr) {
 	uint32_t slot = cmd_offset - Pm4::COMPUTE_USER_DATA_0;
 
 	auto reg_num = (cmd_id >> 16u) & 0x3fffu;
-	EXIT_NOT_IMPLEMENTED(reg_num > 16u - slot);
+	const uint32_t max_write = slot < 16u ? std::min(reg_num, 16u - slot) : 0u;
+	if (reg_num > max_write) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "PM4: clamping CS user SGPR write slot=%u count=%u to %u\n", slot, reg_num,
+			           max_write);
+		}
+	}
 
-	for (uint32_t i = 0; i < reg_num; i++) {
+	for (uint32_t i = 0; i < max_write; i++) {
 		cp.GetShCtx().SetCsUserSgpr(slot + i, buffer[i]);
 	}
 
@@ -374,9 +399,17 @@ KYTY_HW_SH_PARSER(HwShSetPsUserSgpr) {
 	uint32_t slot = cmd_offset - Pm4::SPI_SHADER_USER_DATA_PS_0;
 
 	auto reg_num = (cmd_id >> 16u) & 0x3fffu;
-	EXIT_NOT_IMPLEMENTED(reg_num > 32u - slot);
+	const uint32_t max_write = slot < 32u ? std::min(reg_num, 32u - slot) : 0u;
+	if (reg_num > max_write) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "PM4: clamping PS user SGPR write slot=%u count=%u to %u\n", slot, reg_num,
+			           max_write);
+		}
+	}
 
-	for (uint32_t i = 0; i < reg_num; i++) {
+	for (uint32_t i = 0; i < max_write; i++) {
 		cp.GetShCtx().SetPsUserSgpr(slot + i, buffer[i]);
 	}
 
@@ -387,9 +420,17 @@ KYTY_HW_SH_PARSER(HwShSetGsUserSgpr) {
 	uint32_t slot = cmd_offset - Pm4::SPI_SHADER_USER_DATA_GS_0;
 
 	auto reg_num = (cmd_id >> 16u) & 0x3fffu;
-	EXIT_NOT_IMPLEMENTED(reg_num > 32u - slot);
+	const uint32_t max_write = slot < 32u ? std::min(reg_num, 32u - slot) : 0u;
+	if (reg_num > max_write) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "PM4: clamping GS user SGPR write slot=%u count=%u to %u\n", slot, reg_num,
+			           max_write);
+		}
+	}
 
-	for (uint32_t i = 0; i < reg_num; i++) {
+	for (uint32_t i = 0; i < max_write; i++) {
 		cp.GetShCtx().SetGsUserSgpr(slot + i, buffer[i]);
 	}
 
@@ -400,9 +441,17 @@ KYTY_HW_SH_PARSER(HwShSetHsUserSgpr) {
 	uint32_t slot = cmd_offset - Pm4::SPI_SHADER_USER_DATA_HS_0;
 
 	auto reg_num = (cmd_id >> 16u) & 0x3fffu;
-	EXIT_NOT_IMPLEMENTED(reg_num > 32u - slot);
+	const uint32_t max_write = slot < 32u ? std::min(reg_num, 32u - slot) : 0u;
+	if (reg_num > max_write) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "PM4: clamping HS user SGPR write slot=%u count=%u to %u\n", slot, reg_num,
+			           max_write);
+		}
+	}
 
-	for (uint32_t i = 0; i < reg_num; i++) {
+	for (uint32_t i = 0; i < max_write; i++) {
 		cp.GetShCtx().SetHsUserSgpr(slot + i, buffer[i]);
 	}
 
@@ -414,7 +463,13 @@ static bool HwShIsUserAccumulatorRange(uint32_t first, uint32_t count, uint32_t 
 }
 
 static void HwShIgnoreUserAccumulatorRegister(CommandProcessor&, uint32_t, uint32_t value) {
-	EXIT_NOT_IMPLEMENTED((value & ~0x7fu) != 0);
+	if ((value & ~0x7fu) != 0) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "PM4: ignoring extended user accumulator value=0x%08" PRIx32 "\n", value);
+		}
+	}
 }
 
 KYTY_HW_SH_PARSER(HwShIgnoreUserAccumulator) {
@@ -424,7 +479,16 @@ KYTY_HW_SH_PARSER(HwShIgnoreUserAccumulator) {
 	    HwShIsUserAccumulatorRange(cmd_offset, reg_num, Pm4::SPI_SHADER_USER_ACCUM_ESGS_0) ||
 	    HwShIsUserAccumulatorRange(cmd_offset, reg_num, Pm4::SPI_SHADER_USER_ACCUM_LSHS_0) ||
 	    HwShIsUserAccumulatorRange(cmd_offset, reg_num, Pm4::COMPUTE_USER_ACCUM_0);
-	EXIT_NOT_IMPLEMENTED(reg_num == 0 || !valid_range);
+	if (reg_num == 0 || !valid_range) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "PM4: ignoring out-of-range user accumulator offset=0x%08" PRIx32
+			           " count=%u\n",
+			           cmd_offset, reg_num);
+		}
+		return reg_num;
+	}
 
 	for (uint32_t i = 0; i < reg_num; i++) {
 		HwShIgnoreUserAccumulatorRegister(cp, cmd_offset + i, buffer[i]);
@@ -971,9 +1035,14 @@ KYTY_CP_OP_PARSER(CpOpIndirectBuffer) {
 		return 3;
 	}
 	if (indirect_buffer == nullptr) {
-		EXIT("indirect command buffer has null address, num_dw = %" PRIu32
-		     ", control = 0x%08" PRIx32 "\n",
-		     indirect_num_dw, buffer[2]);
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "PM4: skipping null indirect command buffer (num_dw=%" PRIu32
+			           ", control=0x%08" PRIx32 ")\n",
+			           indirect_num_dw, buffer[2]);
+		}
+		return 3;
 	}
 
 	GraphicsDbgDumpDcb("ci", indirect_num_dw, indirect_buffer);
@@ -993,11 +1062,16 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 	                                (static_cast<uint64_t>(buffer[1]) << 32u));
 	uint32_t indirect_num_dw = buffer[3] & 0x3fffu;
 
-	if (indirect_num_dw == 0) {
+	if (indirect_num_dw == 0 || indirect_buffer == nullptr) {
+		if (indirect_num_dw != 0 && indirect_buffer == nullptr) {
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "PM4: skipping null indirect CX register buffer (num_regs=%" PRIu32 ")\n",
+				           indirect_num_dw);
+			}
+		}
 		return KYTY_PM4_LEN(cmd_id) - 1u;
-	}
-	if (indirect_buffer == nullptr) {
-		EXIT("indirect CX registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
 	}
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
 		// Keep the encoded offset for packet control values, and use the normalized offset
@@ -1035,15 +1109,14 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 		auto pfunc = g_hw_ctx_indirect_func[cmd_offset & (Pm4::CX_NUM - 1)];
 
 		if (pfunc == nullptr) {
-			if (raw_cmd_offset == 0x24au && value == 0u) {
-				static std::atomic_flag logged = ATOMIC_FLAG_INIT;
-				if (!logged.test_and_set(std::memory_order_relaxed)) {
-					Log::WriteToConsoleAndLog(
-					    "\t diagnostic: ignoring indirect CX {0x24a, 0}; hardware effect unresolved\n");
-				}
-				continue;
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "PM4: ignoring unknown indirect CX reg 0x%" PRIx32 " = 0x%08" PRIx32
+				           "\n",
+				           cmd_offset, value);
 			}
-			EXIT("unknown cx reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
+			continue;
 		}
 
 		pfunc(cp, cmd_offset, value);
@@ -1062,13 +1135,17 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 	                                (static_cast<uint64_t>(buffer[1]) << 32u));
 	uint32_t indirect_num_dw = buffer[3] & 0x3fffu;
 
-	if (indirect_num_dw == 0) {
+	if (indirect_num_dw == 0 || indirect_buffer == nullptr) {
+		if (indirect_num_dw != 0 && indirect_buffer == nullptr) {
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "PM4: skipping null indirect SH register buffer (num_regs=%" PRIu32 ")\n",
+				           indirect_num_dw);
+			}
+		}
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
-	if (indirect_buffer == nullptr) {
-		EXIT("indirect SH registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
-	}
-	const auto indirect_address = reinterpret_cast<uint64_t>(indirect_buffer);
 
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
 		auto raw_cmd_offset = indirect_buffer[0];
@@ -1080,23 +1157,27 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 		}
 
 		if (cmd_offset >= Pm4::SH_NUM) {
-			EXIT("unsupported indirect SH register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
-			     "), value = 0x%08" PRIx32 "\n",
-			     cmd_offset, raw_cmd_offset, value);
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "PM4: ignoring extended indirect SH reg offset=0x%08" PRIx32
+				           " value=0x%08" PRIx32 "\n",
+				           cmd_offset, value);
+			}
+			continue;
 		}
 
 		auto pfunc = g_hw_sh_indirect_func[cmd_offset];
 
 		if (pfunc == nullptr) {
-			LOGF("unknown indirect SH register: index=%" PRIu32 "/%" PRIu32 ", regs=0x%016" PRIx64
-			     ", offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
-			     i, indirect_num_dw, indirect_address, cmd_offset, value);
-			auto* dump_regs = indirect_buffer - i * 2;
-			for (uint32_t j = 0; j < indirect_num_dw && j < 16; j++) {
-				LOGF("\t sh_indirect[%" PRIu32 "] offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
-				     j, dump_regs[j * 2], dump_regs[j * 2 + 1]);
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "PM4: ignoring unknown indirect SH reg 0x%" PRIx32 " = 0x%08" PRIx32
+				           "\n",
+				           cmd_offset, value);
 			}
-			EXIT("unknown sh reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
+			continue;
 		}
 
 		pfunc(cp, cmd_offset, value);
@@ -1115,35 +1196,47 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 	                                (static_cast<uint64_t>(buffer[1]) << 32u));
 	uint32_t indirect_num_dw = buffer[3] & 0x3fffu;
 
-	if (indirect_num_dw == 0) {
+	if (indirect_num_dw == 0 || indirect_buffer == nullptr) {
+		if (indirect_num_dw != 0 && indirect_buffer == nullptr) {
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "PM4: skipping null indirect UC register buffer (num_regs=%" PRIu32 ")\n",
+				           indirect_num_dw);
+			}
+		}
 		return KYTY_PM4_LEN(cmd_id) - 1u;
-	}
-	if (indirect_buffer == nullptr) {
-		EXIT("indirect UC registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
 	}
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
 		auto raw_cmd_offset = indirect_buffer[0];
 		auto cmd_offset     = NormalizeRegisterOffset(raw_cmd_offset);
 		auto value          = indirect_buffer[1];
 
-		if (cmd_offset == Pm4::UC_NOP) {
+		if (cmd_offset == Pm4::UC_NOP || raw_cmd_offset == 0xffffffffu) {
 			continue;
 		}
 		if (cmd_offset >= Pm4::UC_NUM) {
-			EXIT("unsupported indirect UC register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
-			     "), value = 0x%08" PRIx32 "\n",
-			     cmd_offset, raw_cmd_offset, value);
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "PM4: ignoring extended indirect UC reg offset=0x%08" PRIx32
+				           " value=0x%08" PRIx32 "\n",
+				           cmd_offset, value);
+			}
+			continue;
 		}
 
 		auto pfunc = g_hw_uc_indirect_func[cmd_offset & (Pm4::UC_NUM - 1)];
 
 		if (pfunc == nullptr) {
-			auto* dump_regs = indirect_buffer - i * 2;
-			for (uint32_t j = 0; j < indirect_num_dw && j < 16; j++) {
-				LOGF("\t uc_indirect[%" PRIu32 "] offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
-				     j, dump_regs[j * 2], dump_regs[j * 2 + 1]);
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "PM4: ignoring unknown indirect UC reg 0x%" PRIx32 " = 0x%08" PRIx32
+				           "\n",
+				           cmd_offset, value);
 			}
-			EXIT("unknown uc reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
+			continue;
 		}
 		pfunc(cp, cmd_offset, value);
 	}
@@ -1166,9 +1259,12 @@ KYTY_CP_OP_PARSER(CpOpNop) {
 		return cp_op(cp, cmd_id, buffer, dw, num_dw);
 	}
 
-	EXIT("unknown custom code at 0x%05" PRIx32 ": 0x%02" PRIx32 "\n", num_dw - dw, r);
+	LOGF_COLOR(Log::Color::Yellow,
+	           "unknown PM4 NOP custom code at 0x%05" PRIx32 ": 0x%02" PRIx32
+	           " (len=%" PRIu32 ") — skipping cleanly\n",
+	           num_dw - dw, r, KYTY_PM4_LEN(cmd_id));
 
-	return 0;
+	return KYTY_PM4_LEN(cmd_id) - 1u;
 }
 
 KYTY_CP_OP_PARSER(CpOpNumInstances) {
@@ -1200,7 +1296,14 @@ KYTY_CP_OP_PARSER(CpOpPushMarker) {
 KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0064900);
+	const auto packet_len = KYTY_PM4_LEN(cmd_id);
+	if (packet_len < 8u) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "CpOpReleaseMem: unexpected packet length %" PRIu32 " (cmd_id=0x%08" PRIx32
+		           ") — skipping cleanly\n",
+		           packet_len, cmd_id);
+		return packet_len - 1u;
+	}
 
 	// The event type, cache actions and destination cache only order GPU work, which the renderer's
 	// resource barriers already order. A GL2 writeback (GCR_CNTL bit 9) also makes shader writes
@@ -1211,22 +1314,38 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	    buffer[4] | (static_cast<uint64_t>(buffer[5]) << 32u), buffer[6] & 0x07ffffffu,
 	    (buffer[0] & (1u << 21u)) != 0);
 
-	return 7;
+	return packet_len - 1u;
 }
 
 KYTY_CP_OP_PARSER(CpOpMemSemaphore) {
 	KYTY_PROFILER_FUNCTION();
 
+	const auto packet_len = KYTY_PM4_LEN(cmd_id);
+	if (packet_len < 4u) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "CpOpMemSemaphore: unexpected packet length %" PRIu32 " (cmd_id=0x%08" PRIx32
+		           ") — skipping cleanly\n",
+		           packet_len, cmd_id);
+		return packet_len - 1u;
+	}
+
 	const auto control = buffer[2];
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0023900 || (control & ~0xe0110000u) != 0 ||
-	                     (control >> 29u) < 6u);
+	const auto sem_sel = control >> 29u;
+	if ((control & ~0xe0110000u) != 0 || sem_sel < 6u) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "CpOpMemSemaphore: extended control bits 0x%08" PRIx32 " (cmd_id=0x%08" PRIx32
+		           ")\n",
+		           control, cmd_id);
+	}
 
 	auto* counter = reinterpret_cast<uint64_t*>(
 	    (buffer[0] & ~0x7u) | (static_cast<uint64_t>(buffer[1] & 0x3ffffu) << 32u));
 	// A signal updates the counter before the next packet, so its mailbox stall never waits.
-	cp.MemSemaphore(counter, (control >> 29u) == 6u, ((control >> 20u) & 0x1u) != 0);
+	if (sem_sel >= 6u && counter != nullptr) {
+		cp.MemSemaphore(counter, sem_sel == 6u, ((control >> 20u) & 0x1u) != 0);
+	}
 
-	return 3;
+	return packet_len - 1u;
 }
 
 // Writes each value of a SET_*_REG packet to the next register, as the hardware does.
@@ -1237,9 +1356,11 @@ static uint32_t SetRegisters(CommandProcessor& cp, const Table& table, uint32_t 
 	for (uint32_t i = 0; i < num_values; i++) {
 		const auto offset = cmd_offset + i;
 		if (offset >= std::size(table) || table[offset] == nullptr) {
-			EXIT("unknown register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-			     "\n\tcmd_offset = %08" PRIx32 "\n",
-			     position, cmd_id, offset);
+			LOGF_COLOR(Log::Color::Yellow,
+			           "unknown PM4 register at 0x%05" PRIx32 " (cmd_id=0x%08" PRIx32
+			           ", offset=0x%08" PRIx32 ", value=0x%08" PRIx32 ") — ignoring\n",
+			           position, cmd_id, offset, values[i]);
+			continue;
 		}
 		table[offset](cp, offset, values[i]);
 	}
@@ -1266,7 +1387,14 @@ KYTY_CP_OP_PARSER(CpOpSetShaderReg) {
 		return 2;
 	}
 
-	EXIT_NOT_IMPLEMENTED(cmd_offset >= Pm4::SH_NUM);
+	if (cmd_offset >= Pm4::SH_NUM) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "PM4: ignoring extended SET_SH_REG offset=0x%08" PRIx32 "\n", cmd_offset);
+		}
+		return KYTY_PM4_LEN(cmd_id) - 1u;
+	}
 
 	auto pfunc = g_hw_sh_func[cmd_offset];
 

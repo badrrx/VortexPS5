@@ -123,19 +123,25 @@ BufferAccess BufferAccessOf(ValueOpcode opcode) {
 		case ValueOpcode::BufferAtomicSwap32:
 		case ValueOpcode::BufferAtomicCmpSwap32:
 		case ValueOpcode::BufferAtomicSwap64:
+		case ValueOpcode::BufferAtomicCmpSwap64:
 		case ValueOpcode::BufferAtomicIAdd32:
 		case ValueOpcode::BufferAtomicIAdd64:
 		case ValueOpcode::BufferAtomicISub32:
+		case ValueOpcode::BufferAtomicISub64:
 		case ValueOpcode::BufferAtomicSMin32:
+		case ValueOpcode::BufferAtomicSMin64:
 		case ValueOpcode::BufferAtomicUMin32:
 		case ValueOpcode::BufferAtomicUMin64:
 		case ValueOpcode::BufferAtomicSMax32:
+		case ValueOpcode::BufferAtomicSMax64:
 		case ValueOpcode::BufferAtomicUMax32:
+		case ValueOpcode::BufferAtomicUMax64:
 		case ValueOpcode::BufferAtomicAnd32:
 		case ValueOpcode::BufferAtomicAnd64:
 		case ValueOpcode::BufferAtomicOr32:
 		case ValueOpcode::BufferAtomicOr64:
 		case ValueOpcode::BufferAtomicXor32:
+		case ValueOpcode::BufferAtomicXor64:
 		case ValueOpcode::BufferAtomicFMin32:
 		case ValueOpcode::BufferAtomicFMax32: return BufferAccess::Atomic;
 		default: return BufferAccess::None;
@@ -145,10 +151,16 @@ BufferAccess BufferAccessOf(ValueOpcode opcode) {
 uint32_t BufferComponentCount(ValueOpcode opcode) {
 	switch (opcode) {
 		case ValueOpcode::BufferAtomicSwap64:
+		case ValueOpcode::BufferAtomicCmpSwap64:
 		case ValueOpcode::BufferAtomicIAdd64:
+		case ValueOpcode::BufferAtomicISub64:
+		case ValueOpcode::BufferAtomicSMin64:
 		case ValueOpcode::BufferAtomicUMin64:
+		case ValueOpcode::BufferAtomicSMax64:
+		case ValueOpcode::BufferAtomicUMax64:
 		case ValueOpcode::BufferAtomicAnd64:
 		case ValueOpcode::BufferAtomicOr64:
+		case ValueOpcode::BufferAtomicXor64:
 		case ValueOpcode::LoadBufferU32x2:
 		case ValueOpcode::StoreBufferU32x2: return 2u;
 		case ValueOpcode::LoadBufferU32x3:
@@ -223,7 +235,29 @@ AddressOpcodeInfo AddressOpcodeInfoOf(ValueOpcode opcode) {
 		case ValueOpcode::LoadAddressU32: return {AddressAccess::Read, 32u};
 		case ValueOpcode::StoreAddressU8: return {AddressAccess::Write, 8u};
 		case ValueOpcode::StoreAddressU16: return {AddressAccess::Write, 16u};
-		case ValueOpcode::StoreAddressU32: return {AddressAccess::Write, 32u};
+		case ValueOpcode::StoreAddressU32:
+		case ValueOpcode::AddressAtomicSwap32:
+		case ValueOpcode::AddressAtomicCmpSwap32:
+		case ValueOpcode::AddressAtomicIAdd32:
+		case ValueOpcode::AddressAtomicISub32:
+		case ValueOpcode::AddressAtomicSMin32:
+		case ValueOpcode::AddressAtomicUMin32:
+		case ValueOpcode::AddressAtomicSMax32:
+		case ValueOpcode::AddressAtomicUMax32:
+		case ValueOpcode::AddressAtomicAnd32:
+		case ValueOpcode::AddressAtomicOr32:
+		case ValueOpcode::AddressAtomicXor32: return {AddressAccess::Write, 32u};
+		case ValueOpcode::AddressAtomicSwap64:
+		case ValueOpcode::AddressAtomicCmpSwap64:
+		case ValueOpcode::AddressAtomicIAdd64:
+		case ValueOpcode::AddressAtomicISub64:
+		case ValueOpcode::AddressAtomicSMin64:
+		case ValueOpcode::AddressAtomicUMin64:
+		case ValueOpcode::AddressAtomicSMax64:
+		case ValueOpcode::AddressAtomicUMax64:
+		case ValueOpcode::AddressAtomicAnd64:
+		case ValueOpcode::AddressAtomicOr64:
+		case ValueOpcode::AddressAtomicXor64: return {AddressAccess::Write, 64u};
 		default: return {};
 	}
 }

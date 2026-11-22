@@ -41,36 +41,12 @@ struct Frame {
 	uint64_t checksum        = 0; // XXH3 of the compressed bytes.
 };
 
-// Changes with every build, so records never meet code that encodes them differently. Zero when
-// the executable cannot be found.
-uint64_t BuildStamp() {
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	std::array<wchar_t, 32768> name {};
-	GetModuleFileNameW(nullptr, name.data(), static_cast<DWORD>(name.size()));
-	const std::filesystem::path path = name.data();
-#elif defined(__APPLE__)
-	std::array<char, 4096> name {};
-	auto size = static_cast<uint32_t>(name.size());
-	_NSGetExecutablePath(name.data(), &size);
-	const std::filesystem::path path = name.data();
-#else
-	const std::filesystem::path path = "/proc/self/exe";
-#endif
-	std::error_code error;
-	const auto      time = std::filesystem::last_write_time(path, error).time_since_epoch().count();
-	return error ? 0 : static_cast<uint64_t>(time);
-}
-
-// What every record depends on besides its own fields; empty when the build is unknown.
+// Semantic cache header: survives executable rebuilds cleanly and only invalidates when
+// the cache schema, GraphicsPipelineKey layout, SpirvProfile, or compute shared memory changes.
 std::vector<uint8_t> StoreHeader(const GraphicContext& graphics) {
-	const auto stamp = BuildStamp();
-	if (stamp == 0) {
-		return {};
-	}
-	Writer header;
-	IoAll(header, stamp, SpirvProfile(graphics),
-	      graphics.GetPhysicalDeviceProperties().limits.maxComputeSharedMemorySize);
-	return std::move(header.bytes);
+	return BuildShaderStoreHeader(
+	    SHADER_STORE_SCHEMA_VERSION, SpirvProfile(graphics),
+	    graphics.GetPhysicalDeviceProperties().limits.maxComputeSharedMemorySize);
 }
 
 // Record fields, shared by writing and reading.
@@ -87,6 +63,17 @@ template <class S, class Module> void IoModule(S& io, Module& stage) {
 }
 
 } // namespace
+
+std::vector<uint8_t> BuildShaderStoreHeader(uint32_t                                schema_version,
+                                            const ShaderRecompiler::Spirv::Profile& profile,
+                                            uint32_t max_compute_shared_mem) {
+	Writer         header;
+	const uint32_t key_size = static_cast<uint32_t>(sizeof(GraphicsPipelineKey));
+	IoAll(header, SHADER_STORE_MAGIC, schema_version, key_size, profile, max_compute_shared_mem);
+	const uint64_t profile_hash = XXH3_64bits(header.bytes.data(), header.bytes.size());
+	IoAll(header, profile_hash);
+	return std::move(header.bytes);
+}
 
 void ShaderStoreWriter::Open(const std::filesystem::path& path, std::span<const uint8_t> header,
                              uint64_t kept) {

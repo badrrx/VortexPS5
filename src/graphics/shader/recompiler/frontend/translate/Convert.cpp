@@ -87,6 +87,31 @@ void Translator::V_FREXP_EXP_I32_F32(const Decoder::Instruction& inst) {
 	WriteOperand(DestinationOperand(inst), finite);
 }
 
+void Translator::V_FREXP_EXP_I32_F64(const Decoder::Instruction& inst) {
+	const auto source   = ReadOperand(SourceAt(inst, 0), IR::Type::F64);
+	const auto bits     = ir.Emit(IR::ValueOpcode::BitCastU64F64, {source});
+	const auto lo       = IR::U32(ir.Emit(IR::ValueOpcode::CompositeExtractU64, {bits, IR::Value(0u)}));
+	const auto hi       = IR::U32(ir.Emit(IR::ValueOpcode::CompositeExtractU64, {bits, IR::Value(1u)}));
+	const auto exponent = IR::U32(ir.Emit(IR::ValueOpcode::BitFieldUExtract, {hi, IR::Value(20u), IR::Value(11u)}));
+	const auto mant_hi  = ir.BitwiseAnd(hi, IR::U32(IR::Value(0x000fffffu)));
+	const auto normal   = ir.ISub(exponent, IR::U32(IR::Value(1022u)));
+
+	const auto hi_nz      = ir.INotEqual(mant_hi, IR::U32(IR::Value(0u)));
+	const auto lo_nz      = ir.INotEqual(lo, IR::U32(IR::Value(0u)));
+	const auto mant_nz    = ir.LogicalOr(hi_nz, lo_nz);
+	const auto msb_hi     = ir.IAdd(IR::U32(ir.Emit(IR::ValueOpcode::FindUMsb32, {mant_hi})), IR::U32(IR::Value(32u)));
+	const auto msb_lo     = IR::U32(ir.Emit(IR::ValueOpcode::FindUMsb32, {lo}));
+	const auto msb        = ir.Select(hi_nz, msb_hi, msb_lo);
+	const auto subnormal  = ir.ISub(msb, IR::U32(IR::Value(1073u)));
+	const auto denormal   = ir.Select(mant_nz, subnormal, IR::U32(IR::Value(0u)));
+
+	const auto finite =
+	    ir.Select(ir.INotEqual(exponent, IR::U32(IR::Value(0x7ffu))),
+	              ir.Select(ir.INotEqual(exponent, IR::U32(IR::Value(0u))), normal, denormal),
+	              IR::U32(IR::Value(0u)));
+	WriteOperand(DestinationOperand(inst), finite);
+}
+
 void Translator::V_CVT_OFF_F32_I4(const Decoder::Instruction& inst) {
 	const auto nibble =
 	    IR::U32(ir.Emit(IR::ValueOpcode::BitFieldSExtract,

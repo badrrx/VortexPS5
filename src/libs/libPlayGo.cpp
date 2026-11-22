@@ -73,7 +73,9 @@ static int validate_optional_type(int32_t type) {
 }
 
 static void set_optional_chunk(int32_t type, PlayGoOptionalChunk* option) {
-	EXIT_IF(option == nullptr);
+	if (option == nullptr) {
+		return;
+	}
 
 	option->bitmask = (type == PLAYGO_OPTIONAL_TYPE_LANGUAGE ? PLAYGO_LANGUAGE_MASK_ALL
 	                                                         : PLAYGO_SCENARIO_MASK_ALL);

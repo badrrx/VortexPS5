@@ -1427,10 +1427,12 @@ int KYTY_SYSV_ABI NetPoolCreate(const char* name, int size, int flags) {
 	     "\t flags = %d\n",
 	     name, size, flags);
 
-	EXIT_IF(g_net == nullptr);
-
-	EXIT_NOT_IMPLEMENTED(flags != 0);
-	EXIT_NOT_IMPLEMENTED(size == 0);
+	if (g_net == nullptr) {
+		return NET_ERROR_ENOTINIT;
+	}
+	if (size <= 0) {
+		return NET_ERROR_EINVAL;
+	}
 
 	int id = g_net->PoolCreate(name, size);
 
@@ -1650,10 +1652,13 @@ int KYTY_SYSV_ABI NetEtherNtostr(const NetEtherAddr* n, char* str, size_t len) {
 int KYTY_SYSV_ABI NetGetMacAddress(NetEtherAddr* addr, int flags) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(addr == nullptr);
-	EXIT_NOT_IMPLEMENTED(flags != 0);
+	if (addr == nullptr || flags != 0) {
+		return NET_ERROR_EINVAL;
+	}
 
-	memset(addr->data, 0, sizeof(addr->data));
+	// Locally-administered non-zero MAC ("KYTY") so titles never reject an all-zero adapter.
+	static constexpr uint8_t kDefaultMac[6] = {0x02, 0x4b, 0x59, 0x54, 0x59, 0x01};
+	std::memcpy(addr->data, kDefaultMac, sizeof(addr->data));
 
 	return OK;
 }
@@ -3257,7 +3262,9 @@ int KYTY_SYSV_ABI HttpAddRequestHeader(int id, const char* name, const char* val
 	     "\t mode  = %u\n",
 	     id, name, value, mode);
 
-	EXIT_NOT_IMPLEMENTED(mode != 0 && mode != 1);
+	if (mode != 0 && mode != 1) {
+		return HTTP_ERROR_INVALID_VALUE;
+	}
 
 	if (!g_net->HttpAddRequestHeader(Network::Id(id), name, value, mode == 1)) {
 		return HTTP_ERROR_INVALID_ID;
@@ -3271,11 +3278,12 @@ int KYTY_SYSV_ABI HttpCreateEpoll(int http_ctx_id, HttpEpollHandle* eh) {
 
 	LOGF("\t http_ctx_id = %d\n", http_ctx_id);
 
-	EXIT_IF(g_net == nullptr);
-
-	EXIT_NOT_IMPLEMENTED(eh == nullptr);
-
-	EXIT_NOT_IMPLEMENTED(!g_net->HttpValid(Network::Id(http_ctx_id)));
+	if (g_net == nullptr || eh == nullptr) {
+		return HTTP_ERROR_INVALID_VALUE;
+	}
+	if (!g_net->HttpValid(Network::Id(http_ctx_id))) {
+		return HTTP_ERROR_INVALID_ID;
+	}
 
 	*eh = new HttpEpoll;
 
@@ -3289,11 +3297,12 @@ int KYTY_SYSV_ABI HttpDestroyEpoll(int http_ctx_id, HttpEpollHandle eh) {
 
 	LOGF("\t http_ctx_id = %d\n", http_ctx_id);
 
-	EXIT_IF(g_net == nullptr);
-
-	EXIT_NOT_IMPLEMENTED(eh == nullptr);
-
-	EXIT_NOT_IMPLEMENTED(!g_net->HttpValid(Network::Id(http_ctx_id)));
+	if (g_net == nullptr || eh == nullptr) {
+		return HTTP_ERROR_INVALID_VALUE;
+	}
+	if (!g_net->HttpValid(Network::Id(http_ctx_id))) {
+		return HTTP_ERROR_INVALID_ID;
+	}
 
 	delete eh;
 
@@ -3305,9 +3314,12 @@ int KYTY_SYSV_ABI HttpSetEpoll(int id, HttpEpollHandle eh, void* user_arg) {
 
 	LOGF("\t id = %d\n", id);
 
-	EXIT_NOT_IMPLEMENTED(eh == nullptr);
-
-	EXIT_NOT_IMPLEMENTED(!g_net->HttpValidRequest(Network::Id(id)));
+	if (g_net == nullptr || eh == nullptr) {
+		return HTTP_ERROR_INVALID_VALUE;
+	}
+	if (!g_net->HttpValidRequest(Network::Id(id))) {
+		return HTTP_ERROR_INVALID_ID;
+	}
 
 	eh->request_id = Network::Id(id);
 	eh->user_arg   = user_arg;
@@ -3320,7 +3332,9 @@ int KYTY_SYSV_ABI HttpUnsetEpoll(int id) {
 
 	LOGF("\t id = %d\n", id);
 
-	EXIT_NOT_IMPLEMENTED(!g_net->HttpValidRequest(Network::Id(id)));
+	if (g_net == nullptr || !g_net->HttpValidRequest(Network::Id(id))) {
+		return HTTP_ERROR_INVALID_ID;
+	}
 
 	return OK;
 }
@@ -3883,8 +3897,9 @@ void KYTY_SYSV_ABI NetCtlTerm() {
 int KYTY_SYSV_ABI NetCtlGetNatInfo(NetCtlNatInfo* nat_info) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(nat_info == nullptr);
-	EXIT_NOT_IMPLEMENTED(nat_info->size != sizeof(NetCtlNatInfo));
+	if (nat_info == nullptr || nat_info->size < sizeof(NetCtlNatInfo)) {
+		return NET_ERROR_EINVAL;
+	}
 
 	nat_info->stunStatus        = 0;
 	nat_info->natType           = 0;
@@ -4248,8 +4263,9 @@ int KYTY_SYSV_ABI NpCheckCallback() {
 int KYTY_SYSV_ABI NpSetNpTitleId(const NpTitleId* title_id, const NpTitleSecret* title_secret) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(title_id == nullptr);
-	EXIT_NOT_IMPLEMENTED(title_secret == nullptr);
+	if (title_id == nullptr || title_secret == nullptr) {
+		return np_error_invalid_argument;
+	}
 
 	LOGF("\t title_id = %.12s\n"
 	     "\t title_secret = %s\n",
@@ -4261,8 +4277,9 @@ int KYTY_SYSV_ABI NpSetNpTitleId(const NpTitleId* title_id, const NpTitleSecret*
 int KYTY_SYSV_ABI NpSetContentRestriction(const NpContentRestriction* restriction) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(restriction == nullptr);
-	EXIT_NOT_IMPLEMENTED(restriction->size != sizeof(NpContentRestriction));
+	if (restriction == nullptr || restriction->size < sizeof(NpContentRestriction)) {
+		return np_error_invalid_argument;
+	}
 
 	LOGF("\t default_age_restriction = %" PRIi8 "\n"
 	     "\t age_restriction_count   = %" PRIi32 "\n",
@@ -4332,7 +4349,9 @@ int KYTY_SYSV_ABI NpGetNpId(int user_id, NpId* np_id) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	EXIT_NOT_IMPLEMENTED(np_id == nullptr);
+	if (np_id == nullptr) {
+		return np_error_invalid_argument;
+	}
 
 	std::memset(np_id, 0, sizeof(*np_id));
 
@@ -4349,7 +4368,9 @@ int KYTY_SYSV_ABI NpGetOnlineId(int user_id, NpOnlineId* online_id) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	EXIT_NOT_IMPLEMENTED(online_id == nullptr);
+	if (online_id == nullptr) {
+		return np_error_invalid_argument;
+	}
 
 	std::memset(online_id, 0, sizeof(*online_id));
 
@@ -4366,7 +4387,9 @@ int KYTY_SYSV_ABI NpGetAccountIdA(int user_id, uint64_t* account_id) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	EXIT_NOT_IMPLEMENTED(account_id == nullptr);
+	if (account_id == nullptr) {
+		return np_error_invalid_argument;
+	}
 
 	*account_id = 0;
 
@@ -4402,7 +4425,9 @@ int KYTY_SYSV_ABI NpGetAccountCountryA(int user_id, void* country_code) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	EXIT_NOT_IMPLEMENTED(country_code == nullptr);
+	if (country_code == nullptr) {
+		return np_error_invalid_argument;
+	}
 
 	auto* code = static_cast<NpCountryCode*>(country_code);
 	std::memset(code, 0, sizeof(*code));
@@ -4648,7 +4673,9 @@ int KYTY_SYSV_ABI NpCheckPremium(int req_id, const NpCheckPremiumParameter* para
 int KYTY_SYSV_ABI NpGetState(int user_id, uint32_t* state) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(state == nullptr);
+	if (state == nullptr) {
+		return np_error_invalid_argument;
+	}
 
 	LOGF("\t user_id = %d\n", user_id);
 

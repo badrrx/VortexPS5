@@ -1,6 +1,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 
 #include "common/assert.h"
+#include "common/bootTelemetry.h"
 #include "common/debugCounters.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -113,6 +114,7 @@ void GuestGpu::Submit(std::span<const uint32_t> commands) {
 	if (commands.empty()) {
 		return;
 	}
+	Common::BootTelemetry::Global().MarkFirstGpuSubmit();
 	Submission submission;
 	submission.type     = SubmissionType::Commands;
 	submission.queue_id = 0;
@@ -125,6 +127,7 @@ void GuestGpu::SubmitCompute(uint32_t queue, std::span<const uint32_t> commands)
 
 	EXIT_NOT_IMPLEMENTED(queue < ComputeQueueBase || queue >= ComputeQueueBase + ComputeQueueCount);
 
+	Common::BootTelemetry::Global().MarkFirstGpuSubmit();
 	const auto compute_queue = queue - ComputeQueueBase;
 	Submission submission;
 	submission.type     = SubmissionType::Commands;
@@ -588,7 +591,15 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			continue;
 		}
 
-		EXIT_NOT_IMPLEMENTED(remaining_dw < 2);
+		if (remaining_dw < 2) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "truncated PM4 packet at 0x%05" PRIx32 " (cmd_id=0x%08" PRIx32
+			           ", remaining_dw=%" PRIu32 ") — ending buffer cleanly\n",
+			           cursor.offset_dw, packet_header, remaining_dw);
+			cursor.offset_dw          = total_dw;
+			execution.m_made_progress = true;
+			continue;
+		}
 
 		if (debug_dump) {
 			LOGF("CP packet: offset=0x%05" PRIx32 " cmd_id=0x%08" PRIx32 " op=0x%02" PRIx32
@@ -598,8 +609,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 
 		if ((packet_header & 1u) != 0 && ShouldSkipPredicatedPackets()) {
 			auto packet_dw = KYTY_PM4_LEN(packet_header);
-			EXIT_NOT_IMPLEMENTED(packet_dw > remaining_dw);
-			cursor.offset_dw += packet_dw;
+			cursor.offset_dw += std::min(packet_dw, remaining_dw);
 			execution.m_made_progress = true;
 			continue;
 		}
@@ -607,18 +617,15 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		auto handler = g_cp_op_func[opcode];
 
 		if (handler == nullptr) {
-			const auto offset = cursor.offset_dw;
-			LOGF("unknown PM4 packet: data=0x%016" PRIx64 ", num_dw=%" PRIu32
-			     ", offset=0x%05" PRIx32 ", current=0x%016" PRIx64 "\n",
-			     reinterpret_cast<uint64_t>(packet - offset), total_dw, offset,
-			     reinterpret_cast<uint64_t>(packet));
-			const auto  dump_begin = (offset > 8 ? offset - 8 : 0);
-			const auto  dump_end   = std::min<uint32_t>(total_dw, offset + 16);
-			auto* const base       = packet - offset;
-			for (uint32_t i = dump_begin; i < dump_end; i++) {
-				LOGF("\t%05" PRIx32 "%s %08" PRIx32 "\n", i, (i == offset ? ":" : " "), base[i]);
-			}
-			EXIT("unknown op\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32 "\n", offset, packet_header);
+			const auto offset    = cursor.offset_dw;
+			const auto packet_dw = KYTY_PM4_LEN(packet_header);
+			LOGF_COLOR(Log::Color::Yellow,
+			           "unknown PM4 op 0x%02" PRIx32 " at 0x%05" PRIx32 " (cmd_id=0x%08" PRIx32
+			           ", len=%" PRIu32 ") — skipping cleanly\n",
+			           opcode, offset, packet_header, packet_dw);
+			cursor.offset_dw += std::min(packet_dw, remaining_dw);
+			execution.m_made_progress = true;
+			continue;
 		}
 
 		const auto packet_dw =
@@ -800,12 +807,28 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
                                          uint32_t stride_in_bytes, IndirectDrawRegisters registers,
                                          uint32_t draw_initiator, bool indexed) {
 	CountDraw();
-	EXIT_NOT_IMPLEMENTED((draw_initiator & ~0x20u) != (indexed ? 0u : 2u));
-	EXIT_NOT_IMPLEMENTED(m_draw_indirect_args_base_addr == 0);
-	// The guest records match Vulkan's indirect commands byte for byte.
-	EXIT_NOT_IMPLEMENTED((stride_in_bytes & 3u) != 0 ||
-	                     stride_in_bytes < (indexed ? sizeof(vk::DrawIndexedIndirectCommand)
-	                                                : sizeof(vk::DrawIndirectCommand)));
+	if ((draw_initiator & ~0x20u) != (indexed ? 0u : 2u)) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "CommandProcessor: extended DrawIndirectMulti initiator=0x%08" PRIx32
+			           " indexed=%d\n",
+			           draw_initiator, indexed ? 1 : 0);
+		}
+	}
+	const uint32_t min_stride =
+	    indexed ? sizeof(vk::DrawIndexedIndirectCommand) : sizeof(vk::DrawIndirectCommand);
+	if (m_draw_indirect_args_base_addr == 0 || (stride_in_bytes & 3u) != 0 ||
+	    stride_in_bytes < min_stride) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "CommandProcessor: skipping DrawIndirectMulti with invalid base=0x%016" PRIx64
+			           " stride=%u\n",
+			           m_draw_indirect_args_base_addr, stride_in_bytes);
+		}
+		return;
+	}
 
 	const auto draw_count = count_addr == nullptr
 	                            ? max_count_or_count
@@ -876,7 +899,16 @@ void CommandProcessor::ProcessPssr(const Pssr::Request& request) {
 }
 
 void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
-	EXIT_NOT_IMPLEMENTED(args_addr == 0 || (args_addr & 3u) != 0);
+	if (args_addr == 0 || (args_addr & 3u) != 0) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "CommandProcessor: skipping DispatchIndirect with invalid args_addr=0x%016" PRIx64
+			           "\n",
+			           args_addr);
+		}
+		return;
+	}
 	if ((mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0) {
 		const auto* args = reinterpret_cast<const vk::DispatchIndirectCommand*>(args_addr);
 		DispatchDirect(args->x, args->y, args->z, mode);
@@ -916,7 +948,15 @@ void CommandProcessor::ReleaseMem(uint32_t data_sel, uint32_t interrupt_selector
 	}
 
 	// QueuedInterrupt: kNone, kOnly, kAfterWriteConfirm, kDataAfterWriteConfirm, kSendIntCtx.
-	EXIT_NOT_IMPLEMENTED(interrupt_selector > 4);
+	if (interrupt_selector > 4) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "CommandProcessor::ReleaseMem: clamping extended interrupt_selector=%u to 2\n",
+			           interrupt_selector);
+		}
+		interrupt_selector = 2;
+	}
 	const bool interrupt = (interrupt_selector != 0 && interrupt_selector != 3);
 	// kSendIntCtx has no label, and kOnly writes none on graphics queues.
 	if (address == nullptr || interrupt_selector == 4 ||
@@ -954,7 +994,8 @@ void CommandProcessor::ReleaseMem(uint32_t data_sel, uint32_t interrupt_selector
 			write_label(&value, sizeof(value));
 			break;
 		}
-		case 3: data = Sync::ReadReferenceClock(); [[fallthrough]];
+		case 3:
+		case 4: data = Sync::ReadReferenceClock(); [[fallthrough]];
 		case 2: write_label(&data, sizeof(data)); break;
 		case 5: {
 			GetScheduler().Finish();
@@ -963,7 +1004,15 @@ void CommandProcessor::ReleaseMem(uint32_t data_sel, uint32_t interrupt_selector
 			              static_cast<uint32_t*>(address), gds & 0xffffu, gds >> 16u);
 			break;
 		}
-		default: EXIT("unknown release_mem data selector: %" PRIu32 "\n", data_sel);
+		default: {
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "CommandProcessor::ReleaseMem: ignoring unknown data_sel=%" PRIu32 "\n",
+				           data_sel);
+			}
+			break;
+		}
 	}
 
 	// GuestGpu::Process's end-of-slice flush submits the work this interrupt waits on.
@@ -1009,8 +1058,13 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 		case 0x0000002c:
 		case 0x0000002e:
 			if (!valid_cache_event_index) {
-				EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type,
-				     event_index);
+				static std::atomic<uint32_t> log_count {0};
+				if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "CommandProcessor::EventWrite: ignoring unexpected cache event "
+					           "type=0x%08" PRIx32 " index=0x%08" PRIx32 "\n",
+					           event_type, event_index);
+				}
 			}
 			break;
 		case 0x0000000d:
@@ -1056,8 +1110,16 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 			m_synthetic_occlusion_counter = (m_synthetic_occlusion_counter + 1u) & counter_mask;
 			break;
 		}
-		default:
-			EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type, event_index);
+		default: {
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "CommandProcessor::EventWrite: ignoring unknown event type=0x%08" PRIx32
+				           " index=0x%08" PRIx32 "\n",
+				           event_type, event_index);
+			}
+			break;
+		}
 	}
 }
 

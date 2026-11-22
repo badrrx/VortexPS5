@@ -7,3 +7,13 @@ _Build/
 cmake-build-debug/
 _PipelineCache/
 CMakeUserPresets.json
+
+# Runtime caches, telemetry dumps, and local test samples
+_test_samples/
+_DownloadData/
+_TempData/
+cache/
+*.vkcache
+boot_telemetry_*.json
+missing_nids_report.json
+*.log

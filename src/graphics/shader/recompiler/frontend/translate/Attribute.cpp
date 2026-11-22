@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 
@@ -85,19 +86,26 @@ void Translator::V_INTERP_P2_F16(const Decoder::Instruction& inst) {
 }
 
 void Translator::V_INTERP_MOV_F32(const Decoder::Instruction& inst) {
-	if (inst.src0.value >= 3u) {
-		EXIT("v_interp_mov_f32 mode %u is reserved at pc 0x%08x", inst.src0.value, inst.pc);
+	uint32_t mode = inst.src0.value;
+	if (mode >= 3u) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "v_interp_mov_f32: reserved mode %u at pc 0x%08x — clamping to 0\n", mode,
+		           inst.pc);
+		mode = 0u;
 	}
 	const auto value = ir.Emit(
 	    IR::ValueOpcode::GetInterpolationParameter,
-	    {IR::Value(inst.src1.value), IR::Value(inst.src2.value), IR::Value(inst.src0.value)});
+	    {IR::Value(inst.src1.value), IR::Value(inst.src2.value), IR::Value(mode)});
 	WriteOperand(inst.dst, value);
 }
 
 void Translator::EXP(const Decoder::Instruction& inst) {
 	uint32_t index = 0;
 	if (ExportTargetKindFromTarget(inst.exp.target, index) == IR::ExportTargetKind::Unknown) {
-		EXIT("unsupported EXP target 0x%02x at pc 0x%08x", inst.exp.target, inst.pc);
+		LOGF_COLOR(Log::Color::Yellow,
+		           "EXP: ignoring unsupported target 0x%02x at pc 0x%08x\n", inst.exp.target,
+		           inst.pc);
+		return;
 	}
 	std::array<IR::Value, 4> components {IR::Value(0u), IR::Value(0u), IR::Value(0u),
 	                                     IR::Value(0u)};

@@ -1,5 +1,6 @@
 #include "common/emulatorConfig.h"
 #include "common/trophies.h"
+#include "common/trophyTracker.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "kernel/fileSystem.h"
 #include "libs/libs.h"
@@ -295,17 +296,34 @@ static void RecordTrophyUnlock(TrophyState& state, int trophy_id, bool from_prog
 	} else {
 		LOGF("[Trophy] recorded unlock %d: %s\n", trophy_id, found->second.name.c_str());
 	}
+	// Persist unlocked trophies to saves/trophies/<TitleID>.json for the Home Dashboard tracker.
+	{
+		std::string title_id;
+		if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) && !title_id.empty()) {
+			const uint32_t total_count = static_cast<uint32_t>(state.package->trophies.size());
+			for (const auto id: earned) {
+				const auto& trophy = state.package->trophies.at(id);
+				const auto  grade =
+				    (trophy.grade >= 1 && trophy.grade <= 4)
+				        ? static_cast<Common::TrophyGrade>(trophy.grade)
+				        : Common::TrophyGrade::Bronze;
+				(void)Common::RecordTrophyUnlock(title_id, id, trophy.name, trophy.description,
+				                                 grade, total_count);
+			}
+		}
+	}
 	if (Config::TrophyEnabled()) {
 		for (const auto id: earned) {
 			const auto& trophy = state.package->trophies.at(id);
-			Graphics::NotifyTrophyUnlocked(trophy.name, trophy.grade, trophy.icon_png);
+			Graphics::NotifyTrophyUnlocked(trophy.name, trophy.grade, trophy.icon_png,
+			                               trophy.description);
 		}
 	} else {
 		LOGF("[Trophy] notification disabled by configuration\n");
 	}
 }
 
-static int KYTY_SYSV_ABI NpTrophy2CreateHandle(int* handle) {
+int KYTY_SYSV_ABI NpTrophy2CreateHandle(int* handle) {
 	PRINT_NAME();
 	if (handle == nullptr) {
 		return NP_TROPHY2_ERROR_INVALID_ARGUMENT;
@@ -314,8 +332,8 @@ static int KYTY_SYSV_ABI NpTrophy2CreateHandle(int* handle) {
 	return 0;
 }
 
-static int KYTY_SYSV_ABI NpTrophy2CreateContext(int* context, int user_id, uint32_t service_label,
-                                                uint64_t options) {
+int KYTY_SYSV_ABI NpTrophy2CreateContext(int* context, int user_id, uint32_t service_label,
+                                         uint64_t options) {
 	PRINT_NAME();
 	if (context == nullptr || options != 0 || user_id < 0) {
 		return NP_TROPHY2_ERROR_INVALID_ARGUMENT;
@@ -335,7 +353,7 @@ static int KYTY_SYSV_ABI NpTrophy2CreateContext(int* context, int user_id, uint3
 	return 0;
 }
 
-static int KYTY_SYSV_ABI NpTrophy2RegisterContext(int context, int handle, uint64_t options) {
+int KYTY_SYSV_ABI NpTrophy2RegisterContext(int context, int handle, uint64_t options) {
 	PRINT_NAME();
 	std::scoped_lock lock(g_trophy_mutex);
 	const auto       it = g_contexts.find(context);
@@ -535,7 +553,7 @@ static int KYTY_SYSV_ABI NpTrophy2AbortHandle(int handle) {
 	return 0;
 }
 
-static int KYTY_SYSV_ABI NpTrophy2DestroyHandle(int handle) {
+int KYTY_SYSV_ABI NpTrophy2DestroyHandle(int handle) {
 	PRINT_NAME();
 
 	LOGF("\t handle = %d\n", handle);
@@ -543,7 +561,7 @@ static int KYTY_SYSV_ABI NpTrophy2DestroyHandle(int handle) {
 	return 0;
 }
 
-static int KYTY_SYSV_ABI NpTrophy2DestroyContext(int context) {
+int KYTY_SYSV_ABI NpTrophy2DestroyContext(int context) {
 	PRINT_NAME();
 	std::scoped_lock lock(g_trophy_mutex);
 	return g_contexts.erase(context) != 0 ? 0 : NP_TROPHY2_ERROR_INVALID_CONTEXT;

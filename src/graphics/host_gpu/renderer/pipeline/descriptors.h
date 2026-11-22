@@ -68,6 +68,17 @@ template <typename T>
 void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
                             const ShaderTextureResource& descriptor, uint64_t size);
 
+// Clamps guest texture view LOD and array layer bounds to valid host Vulkan ranges.
+void SanitizeTextureViewBounds(uint32_t raw_min_lod, uint32_t base_level, uint32_t last_level,
+                               uint32_t raw_base_layer, uint32_t image_layers, bool is_array,
+                               uint32_t& out_min_lod, uint32_t& out_base_layer,
+                               uint32_t& out_layer_count);
+
+// Clamps storage buffer range and alignment adjustment to host Vulkan limits.
+void SanitizeStorageBufferRange(uint64_t raw_size, uint64_t raw_offset, uint64_t alignment,
+                                uint64_t max_range, uint64_t& out_aligned_offset,
+                                uint64_t& out_effective_size, uint32_t& out_adjustment);
+
 } // namespace Libs::Graphics
 
 #endif // EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_DESCRIPTORS_H_

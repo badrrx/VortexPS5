@@ -598,9 +598,9 @@ static void patch_shader_register_address(ShaderRegister* regs, uint32_t num_reg
 int KYTY_SYSV_ABI AgcCreateShader(Shader** dst, void* header, const volatile void* code) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(dst == nullptr);
-	EXIT_NOT_IMPLEMENTED(header == nullptr);
-	EXIT_NOT_IMPLEMENTED(code == nullptr);
+	if (dst == nullptr || header == nullptr || code == nullptr) {
+		return static_cast<int>(0x80020016u);
+	}
 
 	AgcTrace("\t header = 0x%016" PRIx64 "\n"
 	         "\t code   = 0x%016" PRIx64 "\n",
@@ -631,8 +631,14 @@ int KYTY_SYSV_ABI AgcCreateShader(Shader** dst, void* header, const volatile voi
 
 	h->code = code;
 
-	EXIT_NOT_IMPLEMENTED(h->file_header != 0x34333231);
-	EXIT_NOT_IMPLEMENTED(h->version != 0x00000018);
+	if (h->file_header != 0x34333231) {
+		return static_cast<int>(0x80020016u);
+	}
+	if (h->version != 0x00000018) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "AgcCreateShader: accepting extended shader header version 0x%08" PRIx32 "\n",
+		           h->version);
+	}
 
 	auto base = reinterpret_cast<uint64_t>(code);
 
@@ -671,9 +677,9 @@ int KYTY_SYSV_ABI AgcGetFusedShaderSize(SizeAlign* dst, const Shader* front,
 	         reinterpret_cast<uint64_t>(dst), reinterpret_cast<uint64_t>(front),
 	         reinterpret_cast<uint64_t>(back));
 
-	EXIT_NOT_IMPLEMENTED(dst == nullptr);
-	EXIT_NOT_IMPLEMENTED(front == nullptr);
-	EXIT_NOT_IMPLEMENTED(back == nullptr);
+	if (dst == nullptr || front == nullptr || back == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_SHADER_HALVES;
+	}
 
 	const auto front_type = static_cast<Prospero::ShaderBinaryType>(front->type);
 	const auto back_type  = static_cast<Prospero::ShaderBinaryType>(back->type);
@@ -710,9 +716,9 @@ static int fuse_shader_halves(Shader* fused_result, const Shader* front,
 	         reinterpret_cast<uint64_t>(fused_result), reinterpret_cast<uint64_t>(front),
 	         reinterpret_cast<uint64_t>(back), reinterpret_cast<uint64_t>(scratch_mem));
 
-	EXIT_NOT_IMPLEMENTED(fused_result == nullptr);
-	EXIT_NOT_IMPLEMENTED(front == nullptr);
-	EXIT_NOT_IMPLEMENTED(back == nullptr);
+	if (fused_result == nullptr || front == nullptr || back == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_SHADER_HALVES;
+	}
 
 	const auto front_type = static_cast<Prospero::ShaderBinaryType>(front->type);
 	const auto is_gs      = front_type == Prospero::ShaderBinaryType::kGsFront;
@@ -848,7 +854,9 @@ static void reg_indirect_write_packet(uint32_t* cmd, uint64_t vaddr, uint32_t nu
 }
 
 static int reg_indirect_patch_set_address(uint32_t* cmd, uint64_t vaddr, RegIndirectPacket type) {
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	if (is_native_reg_indirect_packet(cmd, type)) {
 		cmd[1] = (cmd[1] & 0x3u) | (static_cast<uint32_t>(vaddr) & 0xfffffffcu);
@@ -861,7 +869,9 @@ static int reg_indirect_patch_set_address(uint32_t* cmd, uint64_t vaddr, RegIndi
 
 static int reg_indirect_patch_set_num_registers(uint32_t* cmd, uint32_t num_regs,
                                                 RegIndirectPacket type) {
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	if (is_native_reg_indirect_packet(cmd, type)) {
 		cmd[4] = (cmd[4] & ~0x3fffu) | (num_regs & 0x3fffu);
@@ -873,7 +883,9 @@ static int reg_indirect_patch_set_num_registers(uint32_t* cmd, uint32_t num_regs
 
 static int reg_indirect_patch_add_registers(uint32_t* cmd, uint32_t num_regs,
                                             RegIndirectPacket type) {
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	if (is_native_reg_indirect_packet(cmd, type)) {
 		auto new_num_regs = ((cmd[4] & 0x3fffu) + num_regs) & 0x3fffu;
@@ -892,8 +904,9 @@ int KYTY_SYSV_ABI AgcSetCxRegIndirectPatchSetAddress(uint32_t*                  
 	         "\t regs = 0x%016" PRIx64 "\n",
 	         reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
-	EXIT_NOT_IMPLEMENTED(regs == nullptr);
+	if (cmd == nullptr || regs == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(regs);
 
@@ -908,8 +921,9 @@ int KYTY_SYSV_ABI AgcSetShRegIndirectPatchSetAddress(uint32_t*                  
 	         "\t regs = 0x%016" PRIx64 "\n",
 	         reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
-	EXIT_NOT_IMPLEMENTED(regs == nullptr);
+	if (cmd == nullptr || regs == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(regs);
 
@@ -924,8 +938,9 @@ int KYTY_SYSV_ABI AgcSetUcRegIndirectPatchSetAddress(uint32_t*                  
 	         "\t regs = 0x%016" PRIx64 "\n",
 	         reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
-	EXIT_NOT_IMPLEMENTED(regs == nullptr);
+	if (cmd == nullptr || regs == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(regs);
 
@@ -939,7 +954,9 @@ int KYTY_SYSV_ABI AgcSetCxRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_
 	         "\t num_regs = %" PRIu32 "\n",
 	         reinterpret_cast<uint64_t>(cmd), num_regs);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	return reg_indirect_patch_set_num_registers(cmd, num_regs, RegIndirectPacket::Cx);
 }
@@ -951,7 +968,9 @@ int KYTY_SYSV_ABI AgcSetShRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_
 	         "\t num_regs = %" PRIu32 "\n",
 	         reinterpret_cast<uint64_t>(cmd), num_regs);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	return reg_indirect_patch_set_num_registers(cmd, num_regs, RegIndirectPacket::Sh);
 }
@@ -963,7 +982,9 @@ int KYTY_SYSV_ABI AgcSetUcRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_
 	         "\t num_regs = %" PRIu32 "\n",
 	         reinterpret_cast<uint64_t>(cmd), num_regs);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	return reg_indirect_patch_set_num_registers(cmd, num_regs, RegIndirectPacket::Uc);
 }
@@ -975,7 +996,9 @@ int KYTY_SYSV_ABI AgcSetCxRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t n
 	         "\t num_regs = %" PRIu32 "\n",
 	         reinterpret_cast<uint64_t>(cmd), num_regs);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	return reg_indirect_patch_add_registers(cmd, num_regs, RegIndirectPacket::Cx);
 }
@@ -987,7 +1010,9 @@ int KYTY_SYSV_ABI AgcSetShRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t n
 	         "\t num_regs = %" PRIu32 "\n",
 	         reinterpret_cast<uint64_t>(cmd), num_regs);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	return reg_indirect_patch_add_registers(cmd, num_regs, RegIndirectPacket::Sh);
 }
@@ -999,7 +1024,9 @@ int KYTY_SYSV_ABI AgcSetUcRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t n
 	         "\t num_regs = %" PRIu32 "\n",
 	         reinterpret_cast<uint64_t>(cmd), num_regs);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
 	return reg_indirect_patch_add_registers(cmd, num_regs, RegIndirectPacket::Uc);
 }
@@ -1305,17 +1332,19 @@ int KYTY_SYSV_ABI AgcCreateInterpolantMapping(ShaderRegister* regs, const Shader
 	         reinterpret_cast<uint64_t>(regs), reinterpret_cast<uint64_t>(gs),
 	         reinterpret_cast<uint64_t>(ps));
 
-	EXIT_NOT_IMPLEMENTED(regs == nullptr);
-	EXIT_NOT_IMPLEMENTED(ps != nullptr && ps->num_input_semantics != 0 &&
-	                     ps->input_semantics == nullptr);
+	if (regs == nullptr ||
+	    (ps != nullptr && ps->num_input_semantics != 0 && ps->input_semantics == nullptr)) {
+		return static_cast<int>(0x80020016u);
+	}
 
 	if (ps == nullptr || ps->num_input_semantics == 0) {
 		set_identity_interpolant_registers(regs, 0);
 		return OK;
 	}
 
-	EXIT_NOT_IMPLEMENTED(gs == nullptr);
-	EXIT_NOT_IMPLEMENTED(gs->num_output_semantics != 0 && gs->output_semantics == nullptr);
+	if (gs == nullptr || (gs->num_output_semantics != 0 && gs->output_semantics == nullptr)) {
+		return static_cast<int>(0x80020016u);
+	}
 
 	for (uint32_t ps_index = 0; ps_index < ps->num_input_semantics; ps_index++) {
 		const auto& ps_semantic = ps->input_semantics[ps_index];
@@ -1361,17 +1390,19 @@ int KYTY_SYSV_ABI AgcCreateInterpolantMapping2(ShaderRegister* regs, const Shade
 	         reinterpret_cast<uint64_t>(regs), reinterpret_cast<uint64_t>(gs),
 	         reinterpret_cast<uint64_t>(ps));
 
-	EXIT_NOT_IMPLEMENTED(regs == nullptr);
-	EXIT_NOT_IMPLEMENTED(ps != nullptr && ps->num_input_semantics != 0 &&
-	                     ps->input_semantics == nullptr);
+	if (regs == nullptr ||
+	    (ps != nullptr && ps->num_input_semantics != 0 && ps->input_semantics == nullptr)) {
+		return static_cast<int>(0x80020016u);
+	}
 
 	if (ps == nullptr || ps->num_input_semantics == 0) {
 		set_identity_interpolant_registers(regs, 0);
 		return OK;
 	}
 
-	EXIT_NOT_IMPLEMENTED(gs == nullptr);
-	EXIT_NOT_IMPLEMENTED(gs->num_output_semantics != 0 && gs->output_semantics == nullptr);
+	if (gs == nullptr || (gs->num_output_semantics != 0 && gs->output_semantics == nullptr)) {
+		return static_cast<int>(0x80020016u);
+	}
 
 	for (uint32_t i = 0; i < ps->num_input_semantics; i++) {
 		const auto source     = shader_semantic_word(ps->input_semantics[i]);
@@ -1935,11 +1966,14 @@ uint32_t* KYTY_SYSV_ABI AgcCbReleaseMem(CommandBuffer* buf, uint8_t action, uint
                                         uint8_t interrupt, uint32_t interrupt_ctx_id) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(buf == nullptr);
-	EXIT_NOT_IMPLEMENTED(dst > 1);
-	EXIT_NOT_IMPLEMENTED(data_sel != 0 && data_sel != 1 && data_sel != 2 && data_sel != 3 &&
-	                     data_sel != 5);
-	EXIT_NOT_IMPLEMENTED(interrupt > 4);
+	if (buf == nullptr) {
+		return nullptr;
+	}
+	if (dst > 3u || data_sel > 7u || interrupt > 7u) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "\t AgcCbReleaseMem clamping extended fields dst=%u data_sel=%u interrupt=%u\n",
+		           dst, data_sel, interrupt);
+	}
 
 	auto* cmd = buf->AllocateDW(8);
 
@@ -1990,12 +2024,18 @@ uint32_t* KYTY_SYSV_ABI AgcAcbResetQueue(CommandBuffer* buf, uint32_t op) {
 
 	AgcTrace("\t op    = 0x%08" PRIx32 "\n", op);
 
-	EXIT_NOT_IMPLEMENTED(buf == nullptr);
-	EXIT_NOT_IMPLEMENTED((op & ~0x1c2u) != 0);
+	if (buf == nullptr) {
+		return nullptr;
+	}
+	if ((op & ~0x1c2u) != 0) {
+		LOGF_COLOR(Log::Color::Yellow, "\t AgcAcbResetQueue ignoring extended op bits 0x%08" PRIx32 "\n",
+		           op & ~0x1c2u);
+	}
 
 	auto* cmd = buf->AllocateDW(2);
-
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		return nullptr;
+	}
 
 	cmd[0] = KYTY_PM4(2, Pm4::IT_NOP, Pm4::R_DISPATCH_RESET);
 	cmd[1] = 0;
@@ -2013,8 +2053,14 @@ uint32_t* KYTY_SYSV_ABI AgcDcbResetQueue(CommandBuffer* buf, uint32_t op, uint32
 	         "\t state = 0x%08" PRIx32 "\n",
 	         op, state);
 
-	EXIT_NOT_IMPLEMENTED(buf == nullptr);
-	EXIT_NOT_IMPLEMENTED((op & ~0xfffu) != 0);
+	if (buf == nullptr) {
+		return nullptr;
+	}
+	if ((op & ~0xfffu) != 0) {
+		LOGF_COLOR(Log::Color::Yellow, "\t AgcDcbResetQueue ignoring extended op bits 0x%08" PRIx32 "\n",
+		           op & ~0xfffu);
+		op &= 0xfffu;
+	}
 
 	std::array<uint32_t, 29> packets {KYTY_PM4(3, Pm4::IT_SET_UCONFIG_REG, 1u),
 	                                  Pm4::SQ_THREAD_TRACE_USERDATA_2,
@@ -3016,7 +3062,13 @@ uint32_t* KYTY_SYSV_ABI AgcAcbWaitRegMem(CommandBuffer* buf, uint8_t size, uint8
 
 uint32_t* KYTY_SYSV_ABI AgcAcbMemSemaphore(CommandBuffer* buf, const volatile void* address,
                                            uint8_t mailbox, uint8_t signal_type, uint8_t op) {
-	EXIT_NOT_IMPLEMENTED(op != 6u && op != 7u);
+	if (buf == nullptr) {
+		return nullptr;
+	}
+	if (op != 6u && op != 7u) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "\t AgcAcbMemSemaphore normalizing op=%u to wait semaphore\n", op);
+	}
 
 	auto* cmd =
 	    buf->AllocateDW(AGC_WAIT_USER_DATA_BEGIN_DW + AGC_INTERNAL_DATA_PACKET_SIZE_DW + 4u);

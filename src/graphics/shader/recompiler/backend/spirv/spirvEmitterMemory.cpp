@@ -1432,6 +1432,44 @@ uint32_t EmitBufferAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 	    });
 }
 
+uint32_t EmitAddressAtomic(ValueEmitContext& ctx, const IR::Inst& inst) {
+	auto&       state = ctx.state;
+	const auto& mem   = ctx.Memory(inst);
+	const bool  wide  = inst.GetType() == IR::Type::U64;
+	const auto  type  = wide ? TypeU64(state) : TypeU32(state);
+	const auto  zero  = wide ? ConstantU64(state, 0) : ConstantU32(state, 0);
+	const auto  align = wide ? uint64_t {7} : uint64_t {3};
+	return EmitValueOrDefaultIfCondition(state, ctx.Arg(inst, inst.NumArgs() - 1), type, zero, [&]() {
+		const auto guest_addr = Binary(state, spv::OpBitwiseAnd, TypeU64(state),
+		                               GuestAddress(ctx, inst, mem), ConstantU64(state, ~align));
+		const auto bda        = GetBdaPointer(state, guest_addr);
+		const auto present =
+		    Binary(state, spv::OpINotEqual, TypeBool(state), bda, ConstantU64(state, 0));
+		return EmitValueOrDefaultIfCondition(state, present, type, zero, [&]() {
+			// Wrap PhysicalStorageBuffer atomic target in a Block-decorated struct + OpAccessChain
+			// for strict Vulkan 1.3 / SPIR-V 1.6 PhysicalStorageBuffer validation compliance.
+			const auto block = state.builder.DecoratedType(
+			    spv::OpTypeStruct,
+			    {{spv::OpMemberDecorate, {0, spv::DecorationOffset, 0}},
+			     {spv::OpDecorate, {spv::DecorationBlock}}},
+			    type);
+			const auto base = state.builder.AllocateId();
+			state.builder.AddFunction(
+			    spv::OpConvertUToPtr,
+			    TypePointer(state, spv::StorageClassPhysicalStorageBuffer, block), base, bda);
+			const auto elem_ptr_type =
+			    wide ? TypePointer(state, spv::StorageClassPhysicalStorageBuffer, TypeU64(state))
+			         : TypePhysicalU32Pointer(state);
+			const auto pointer = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpAccessChain, elem_ptr_type, pointer, base,
+			                          ConstantU32(state, 0));
+			const auto old = EmitAtomicOperation(ctx, inst, pointer, spv::ScopeDevice);
+			EmitAtomicMemoryBarrier(state, mem.kind);
+			return old;
+		});
+	});
+}
+
 void EmitSharedAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto& state = ctx.state;
 	const auto& mem = ctx.Memory(inst);

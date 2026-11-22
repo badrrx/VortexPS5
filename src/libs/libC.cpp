@@ -260,14 +260,12 @@ static KYTY_SYSV_ABI int* libc_error() {
 static KYTY_SYSV_ABI void init_env(const InitEnvParams* params) {
 	PRINT_NAME();
 
-	if (params == nullptr) {
+	if (params == nullptr || params->argc < 0) {
 		g_argc = 0;
 		g_argv = nullptr;
 		g_envp = nullptr;
 		return;
 	}
-
-	EXIT_NOT_IMPLEMENTED(params->argc < 0);
 
 	g_argc = params->argc;
 	g_argv = params->argv;
@@ -574,7 +572,12 @@ struct Info {
 void KYTY_SYSV_ABI LibcHeapGetTraceInfo(Info* info) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(info->size != 32);
+	if (info == nullptr || info->size < 32) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "\t LibcHeapGetTraceInfo: ignoring invalid/undersized info (size=%" PRIu64 ")\n",
+		           info != nullptr ? info->size : 0ull);
+		return;
+	}
 
 	info->mspace_atomic_id_mask = &g_mspace_atomic_id_mask;
 	info->mstate_table          = g_mstate_table;
@@ -630,9 +633,11 @@ static KYTY_SYSV_ABI int snprintf(VA_ARGS) {
 int KYTY_SYSV_ABI fflush(FILE* stream) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(stream != stdout);
+	if (stream == nullptr || stream == stdout || stream == stderr) {
+		return ::fflush(stream);
+	}
 
-	return ::fflush(stream);
+	return 0;
 }
 
 void* KYTY_SYSV_ABI memset(void* s, int c, size_t n) {

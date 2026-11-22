@@ -18,6 +18,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <bit>
 #include <cinttypes>
@@ -433,7 +434,11 @@ void TextureCache::ValidateImageDesc(const ImageDesc& desc) const {
 	}
 	if (desc.type == BindingType::VideoOut &&
 	    desc.info.metadata.compression == VideoOutCompression::Unsupported) {
-		EXIT("TextureCache: unsupported compressed video-out description\n");
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: unsupported compressed video-out metadata — proceeding uncompressed\n");
+		}
 	}
 }
 
@@ -441,7 +446,11 @@ void TextureCache::RefreshCopySource(ImageId id) {
 	auto& image = m_slot_images[id];
 	RefreshImage(id);
 	if (image.IsDefinitelyCpuDirty()) {
-		EXIT("TextureCache: image copy source remained CPU-dirty after refresh\n");
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: copy source image remained CPU-dirty after refresh\n");
+		}
 	}
 }
 
@@ -2017,26 +2026,28 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 	}
 }
 
-void TextureCache::RunGarbageCollector() {
+void TextureCache::RunGarbageCollector(MemoryPressureTier pressure) {
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
 	}
-	if (m_total_used_memory < m_trigger_gc_memory) {
+	const bool elevated = pressure == MemoryPressureTier::Elevated;
+	const bool critical = pressure == MemoryPressureTier::Critical;
+	if (!elevated && !critical && m_total_used_memory < m_trigger_gc_memory) {
 		return;
 	}
 	const auto collect = [&](bool allow_aggressive) {
-		bool     pressured  = m_total_used_memory >= m_pressure_gc_memory;
-		bool     aggressive = allow_aggressive && m_total_used_memory >= m_critical_gc_memory;
-		uint64_t age        = 16;
+		bool     pressured  = elevated || m_total_used_memory >= m_pressure_gc_memory;
+		bool     aggressive = allow_aggressive && (critical || m_total_used_memory >= m_critical_gc_memory);
+		uint64_t age        = 160;
 		size_t   deletions  = 10;
 		if (aggressive) {
-			age       = 160;
-			deletions = 40;
+			age       = 16;
+			deletions = 48;
 		} else if (pressured) {
-			age       = 80;
-			deletions = 20;
+			age       = 60;
+			deletions = 24;
 		}
 		age = std::min(age, tick);
 		std::vector<ImageId> candidates;

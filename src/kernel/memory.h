@@ -215,8 +215,15 @@ uint64_t AllocateGuestStackMemory(uint64_t search_addr, uint64_t size,
 bool     ProtectGuestMemory(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode,
                             Common::VirtualMemory::Mode* old_mode = nullptr);
 // Transient PageManager watch state; does not change the guest mapping's semantic protection.
-bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode);
-bool FreeGuestMemory(uint64_t vaddr, uint64_t size);
+bool     ProtectGuestHostMemory(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode);
+bool     FreeGuestMemory(uint64_t vaddr, uint64_t size);
+
+// Host-aware adaptive guest memory budget (in bytes, 2 MiB aligned).
+[[nodiscard]] uint64_t QueryHostPhysicalMemoryBytes() noexcept;
+[[nodiscard]] uint64_t ComputeAdaptiveGuestMemoryBudget(uint64_t host_ram_bytes,
+                                                        bool     trinity_mode,
+                                                        uint32_t override_mb) noexcept;
+[[nodiscard]] uint64_t GetActiveGuestMemoryBudgetBytes() noexcept;
 
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 void     TestSetGpuRangeCallback(void (*callback)(bool mapped, uint64_t addr, size_t size));

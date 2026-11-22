@@ -501,13 +501,27 @@ void WindowContext::ProcessEvent(double time_s) {
 				}
 				[[fallthrough]];
 #endif
+			case SDLK_F1:
+				if (pressed) {
+					if ((event->key.mod & SDL_KMOD_SHIFT) != 0) {
+						RenderDocRequestCapture();
+					} else {
+						ToggleDiagnosticPane(DiagnosticPane::Performance);
+					}
+				}
+				return;
 			case SDLK_F2:
 				if (pressed) {
 					if ((event->key.mod & SDL_KMOD_SHIFT) != 0) {
 						TogglePerformanceOverlayDetails();
 					} else {
-						TogglePerformanceOverlay();
+						ToggleDiagnosticPane(DiagnosticPane::Shaders);
 					}
+				}
+				return;
+			case SDLK_F3:
+				if (pressed) {
+					ToggleDiagnosticPane(DiagnosticPane::Memory);
 				}
 				return;
 			default: break;

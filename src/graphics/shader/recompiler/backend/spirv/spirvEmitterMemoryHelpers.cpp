@@ -575,50 +575,78 @@ spv::Op SpirvAtomicOpcode(IR::ValueOpcode opcode) {
 		case IR::ValueOpcode::SharedAtomicCmpSwap32:
 		case IR::ValueOpcode::SharedAtomicCmpSwap64:
 		case IR::ValueOpcode::ImageAtomicCompareSwap32:
-		case IR::ValueOpcode::BufferAtomicCmpSwap32: return spv::OpAtomicCompareExchange;
+		case IR::ValueOpcode::BufferAtomicCmpSwap32:
+		case IR::ValueOpcode::BufferAtomicCmpSwap64:
+		case IR::ValueOpcode::AddressAtomicCmpSwap32:
+		case IR::ValueOpcode::AddressAtomicCmpSwap64: return spv::OpAtomicCompareExchange;
 		case IR::ValueOpcode::ImageAtomicSwap32:
 		case IR::ValueOpcode::ImageAtomicSwap64:
 		case IR::ValueOpcode::BufferAtomicSwap32:
 		case IR::ValueOpcode::BufferAtomicSwap64:
+		case IR::ValueOpcode::AddressAtomicSwap32:
+		case IR::ValueOpcode::AddressAtomicSwap64:
 		case IR::ValueOpcode::SharedAtomicSwap32: return spv::OpAtomicExchange;
 		case IR::ValueOpcode::ImageAtomicIAdd32:
 		case IR::ValueOpcode::ImageAtomicIAdd64:
 		case IR::ValueOpcode::BufferAtomicIAdd32:
 		case IR::ValueOpcode::SharedAtomicIAdd64:
 		case IR::ValueOpcode::BufferAtomicIAdd64:
+		case IR::ValueOpcode::AddressAtomicIAdd32:
+		case IR::ValueOpcode::AddressAtomicIAdd64:
 		case IR::ValueOpcode::SharedAtomicIAdd32: return spv::OpAtomicIAdd;
 		case IR::ValueOpcode::BufferAtomicISub32:
+		case IR::ValueOpcode::BufferAtomicISub64:
+		case IR::ValueOpcode::AddressAtomicISub32:
+		case IR::ValueOpcode::AddressAtomicISub64:
 		case IR::ValueOpcode::SharedAtomicISub32: return spv::OpAtomicISub;
 		case IR::ValueOpcode::ImageAtomicSMin32:
 		case IR::ValueOpcode::BufferAtomicSMin32:
+		case IR::ValueOpcode::BufferAtomicSMin64:
+		case IR::ValueOpcode::AddressAtomicSMin32:
+		case IR::ValueOpcode::AddressAtomicSMin64:
 		case IR::ValueOpcode::SharedAtomicSMin32: return spv::OpAtomicSMin;
 		case IR::ValueOpcode::ImageAtomicUMin32:
 		case IR::ValueOpcode::ImageAtomicUMin64:
 		case IR::ValueOpcode::BufferAtomicUMin32:
 		case IR::ValueOpcode::BufferAtomicUMin64:
+		case IR::ValueOpcode::AddressAtomicUMin32:
+		case IR::ValueOpcode::AddressAtomicUMin64:
 		case IR::ValueOpcode::SharedAtomicUMin32: return spv::OpAtomicUMin;
 		case IR::ValueOpcode::ImageAtomicSMax32:
 		case IR::ValueOpcode::BufferAtomicSMax32:
+		case IR::ValueOpcode::BufferAtomicSMax64:
+		case IR::ValueOpcode::AddressAtomicSMax32:
+		case IR::ValueOpcode::AddressAtomicSMax64:
 		case IR::ValueOpcode::SharedAtomicSMax32: return spv::OpAtomicSMax;
 		case IR::ValueOpcode::ImageAtomicUMax32:
 		case IR::ValueOpcode::ImageAtomicUMax64:
 		case IR::ValueOpcode::BufferAtomicUMax32:
+		case IR::ValueOpcode::BufferAtomicUMax64:
+		case IR::ValueOpcode::AddressAtomicUMax32:
+		case IR::ValueOpcode::AddressAtomicUMax64:
 		case IR::ValueOpcode::SharedAtomicUMax32:
 		case IR::ValueOpcode::SharedAtomicUMax64: return spv::OpAtomicUMax;
 		case IR::ValueOpcode::ImageAtomicAnd32:
 		case IR::ValueOpcode::ImageAtomicAnd64:
 		case IR::ValueOpcode::BufferAtomicAnd32:
 		case IR::ValueOpcode::BufferAtomicAnd64:
+		case IR::ValueOpcode::AddressAtomicAnd32:
+		case IR::ValueOpcode::AddressAtomicAnd64:
 		case IR::ValueOpcode::SharedAtomicAnd32: return spv::OpAtomicAnd;
 		case IR::ValueOpcode::ImageAtomicOr32:
 		case IR::ValueOpcode::ImageAtomicOr64:
 		case IR::ValueOpcode::BufferAtomicOr32:
 		case IR::ValueOpcode::BufferAtomicOr64:
+		case IR::ValueOpcode::AddressAtomicOr32:
+		case IR::ValueOpcode::AddressAtomicOr64:
 		case IR::ValueOpcode::SharedAtomicOr64:
 		case IR::ValueOpcode::SharedAtomicOr32: return spv::OpAtomicOr;
 		case IR::ValueOpcode::ImageAtomicXor32:
 		case IR::ValueOpcode::ImageAtomicXor64:
 		case IR::ValueOpcode::BufferAtomicXor32:
+		case IR::ValueOpcode::BufferAtomicXor64:
+		case IR::ValueOpcode::AddressAtomicXor32:
+		case IR::ValueOpcode::AddressAtomicXor64:
 		case IR::ValueOpcode::SharedAtomicXor32: return spv::OpAtomicXor;
 		default: return spv::OpNop;
 	}
@@ -633,12 +661,13 @@ uint32_t EmitAtomicOperation(ValueEmitContext& ctx, const IR::Inst& inst, uint32
 	if (opcode == spv::OpAtomicCompareExchange) {
 		auto desired    = ctx.Arg(inst, inst.NumArgs() - 3);
 		auto comparator = ctx.Arg(inst, inst.NumArgs() - 2);
-		if (inst.GetOpcode() == IR::ValueOpcode::SharedAtomicCmpSwap32) {
+		if (inst.GetOpcode() == IR::ValueOpcode::SharedAtomicCmpSwap32 ||
+		    inst.GetOpcode() == IR::ValueOpcode::SharedAtomicCmpSwap64) {
 			// RDNA2 DS compares DATA and stores DATA2, opposite to BUFFER atomics.
 			std::swap(desired, comparator);
 		}
 		ctx.state.builder.AddFunction(
-		    spv::OpAtomicCompareExchange, TypeU32(ctx.state), old, pointer,
+		    spv::OpAtomicCompareExchange, type, old, pointer,
 		    ConstantU32(ctx.state, scope), ConstantU32(ctx.state, spv::MemorySemanticsMaskNone),
 		    ConstantU32(ctx.state, spv::MemorySemanticsMaskNone), desired, comparator);
 	} else {

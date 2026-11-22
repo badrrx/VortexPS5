@@ -106,6 +106,73 @@ static bool IsMultisampledTexture(Prospero::ImageType type) {
 	       type == Prospero::ImageType::kColor2DMsaaArray;
 }
 
+void SanitizeStorageBufferRange(uint64_t raw_size, uint64_t raw_offset, uint64_t alignment,
+                                uint64_t max_range, uint64_t& out_aligned_offset,
+                                uint64_t& out_effective_size, uint32_t& out_adjustment) {
+	const uint64_t safe_align = std::max<uint64_t>(alignment, 1u);
+	uint64_t       clamped    = raw_size;
+	if (max_range > 0 && clamped > max_range) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Descriptors: clamping oversized storage buffer size=%" PRIu64
+			           " to maxStorageBufferRange=%" PRIu64 "\n",
+			           clamped, max_range);
+		}
+		clamped = max_range;
+	}
+	out_aligned_offset = Common::AlignDown(raw_offset, safe_align);
+	const uint64_t adj = raw_offset - out_aligned_offset;
+	if (adj >= 256u) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Descriptors: clamping storage buffer offset adjustment=%" PRIu64 " to 255\n",
+			           adj);
+		}
+		out_adjustment = 255u;
+	} else {
+		out_adjustment = static_cast<uint32_t>(adj);
+	}
+	if (max_range > out_adjustment && clamped > max_range - out_adjustment) {
+		clamped = max_range - out_adjustment;
+	}
+	out_effective_size = clamped + out_adjustment;
+}
+
+void SanitizeTextureViewBounds(uint32_t raw_min_lod, uint32_t base_level, uint32_t last_level,
+                               uint32_t raw_base_layer, uint32_t image_layers, bool is_array,
+                               uint32_t& out_min_lod, uint32_t& out_base_layer,
+                               uint32_t& out_layer_count) {
+	const uint32_t max_min_lod = last_level * 256u;
+	uint32_t       min_lod_raw = raw_min_lod;
+	if (min_lod_raw > max_min_lod) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Descriptors: clamping texture min_lod=%u to last_level*256=%u\n",
+			           min_lod_raw, max_min_lod);
+		}
+		min_lod_raw = max_min_lod;
+	}
+	const uint32_t base_lod = base_level * 256u;
+	out_min_lod             = min_lod_raw > base_lod ? (min_lod_raw - base_lod) : 0u;
+
+	const uint32_t safe_layers = std::max<uint32_t>(image_layers, 1u);
+	if (raw_base_layer >= safe_layers) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Descriptors: clamping texture base_layer=%u to %u\n", raw_base_layer,
+			           safe_layers - 1u);
+		}
+		out_base_layer = safe_layers - 1u;
+	} else {
+		out_base_layer = raw_base_layer;
+	}
+	out_layer_count = is_array ? (safe_layers - out_base_layer) : 1u;
+}
+
 static vk::DescriptorBufferInfo
 NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource& source,
                     const ShaderRecompiler::IR::BufferResource& resource, uint32_t& buffer_offset) {
@@ -118,22 +185,18 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	}
 	const auto& graphics  = context.GetGraphics();
 	const auto  alignment = graphics.StorageMinAlignment();
-	if (size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange) {
-		EXIT("storage buffer range is unsupported\n");
-	}
+	const auto  max_range = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;
+	const auto  clamped_size = std::min<uint64_t>(size, max_range);
 	auto [buffer, offset] = context.GetBufferCache().ObtainBuffer(
-	    address, size, resource.written,
+	    address, clamped_size, resource.written,
 	    resource.formatted || (resource.read && Config::SyncRawImageBuffersEnabled()), id);
-	const auto aligned_offset = Common::AlignDown(offset, alignment);
-	const auto adjustment     = offset - aligned_offset;
-	const auto max_range      = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;
-	if (adjustment >= 256 || size > max_range - adjustment) {
-		EXIT("storage buffer offset adjustment is unsupported\n");
-	}
-	buffer_offset = static_cast<uint32_t>(adjustment);
-	const vk::DescriptorBufferInfo result {buffer->Handle(), aligned_offset, size + adjustment};
+	uint64_t aligned_offset = 0;
+	uint64_t effective_size = 0;
+	SanitizeStorageBufferRange(clamped_size, offset, alignment, max_range, aligned_offset,
+	                           effective_size, buffer_offset);
+	const vk::DescriptorBufferInfo result {buffer->Handle(), aligned_offset, effective_size};
 	if (resource.written) {
-		context.GetTextureCache().InvalidateMemoryFromGPU(address, size);
+		context.GetTextureCache().InvalidateMemoryFromGPU(address, clamped_size);
 	}
 	return result;
 }
@@ -374,14 +437,15 @@ static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& 
 	view.aspect      = vk::ImageAspectFlagBits::eColor;
 	view.base_level  = descriptor.BaseLevel();
 	view.level_count = view_levels;
-	if (descriptor.MinLod() > descriptor.LastLevel() * 256u) {
-		EXIT("texture minimum LOD exceeds last mip level: min_lod=%u last_level=%u\n",
-		     descriptor.MinLod(), descriptor.LastLevel());
-	}
-	const auto base_lod = view.base_level * 256u;
-	if (descriptor.MinLod() > base_lod) {
-		view.min_lod = descriptor.MinLod() - base_lod;
-	}
+	uint32_t sanitized_base_layer  = 0;
+	uint32_t sanitized_layer_count = 1;
+	const bool is_array_view =
+	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1DArray ||
+	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DArray ||
+	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DMsaaArray;
+	SanitizeTextureViewBounds(descriptor.MinLod(), view.base_level, descriptor.LastLevel(),
+	                          descriptor.BaseArray5(), image_layers, is_array_view, view.min_lod,
+	                          sanitized_base_layer, sanitized_layer_count);
 	view.usage = storage ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlagBits::eSampled;
 	view.mapping =
 	    storage || resource.conversion_format != Prospero::BufferFormat::kInvalid
@@ -396,24 +460,29 @@ static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& 
 		case ShaderRecompiler::Decoder::ImageDimension::Dim1DArray:
 		case ShaderRecompiler::Decoder::ImageDimension::Dim2DArray:
 		case ShaderRecompiler::Decoder::ImageDimension::Dim2DMsaaArray:
-			view.type       = vk::ImageViewType::e2DArray;
-			view.base_layer = descriptor.BaseArray5();
-			if (view.base_layer >= image_layers) {
-				EXIT("texture array base layer is out of bounds\n");
-			}
-			view.layer_count = image_layers - view.base_layer;
+			view.type        = vk::ImageViewType::e2DArray;
+			view.base_layer  = sanitized_base_layer;
+			view.layer_count = sanitized_layer_count;
 			break;
 		case ShaderRecompiler::Decoder::ImageDimension::Dim1D:
 		case ShaderRecompiler::Decoder::ImageDimension::Dim2D:
 		case ShaderRecompiler::Decoder::ImageDimension::Dim2DMsaa:
-			view.type       = vk::ImageViewType::e2D;
-			view.base_layer = descriptor.BaseArray5();
-			if (view.base_layer >= image_layers) {
-				EXIT("texture base layer is out of bounds\n");
-			}
+			view.type        = vk::ImageViewType::e2D;
+			view.base_layer  = sanitized_base_layer;
 			view.layer_count = 1;
 			break;
-		default: EXIT("unsupported texture view dimension\n");
+		default: {
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "Descriptors: unknown texture view dimension %u — falling back to 2D\n",
+				           static_cast<uint32_t>(resource.dimension));
+			}
+			view.type        = vk::ImageViewType::e2D;
+			view.base_layer  = sanitized_base_layer;
+			view.layer_count = 1;
+			break;
+		}
 	}
 	return view;
 }

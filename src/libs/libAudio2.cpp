@@ -486,7 +486,9 @@ int KYTY_SYSV_ABI AudioOut2Initialize() {
 int KYTY_SYSV_ABI AudioOut2ContextResetParam(AudioOut2ContextParam* params) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(params == nullptr);
+	if (params == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 
 	std::memset(params, 0, sizeof(AudioOut2ContextParam));
 	params->max_ports   = 8;
@@ -506,8 +508,9 @@ int KYTY_SYSV_ABI AudioOut2ContextQueryMemory(const AudioOut2ContextParam* param
                                               size_t*                      memory_size) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(params == nullptr);
-	EXIT_NOT_IMPLEMENTED(memory_size == nullptr);
+	if (params == nullptr || memory_size == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 	if (!audioout2_valid_context_capacity(*params)) {
 		return AUDIO_OUT2_ERROR_INVALID_PARAM;
 	}
@@ -524,8 +527,9 @@ int KYTY_SYSV_ABI AudioOut2ContextCreate(const AudioOut2ContextParam* params, vo
                                          size_t buffer_size, AudioOut2ContextHandle* ctx) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(params == nullptr);
-	EXIT_NOT_IMPLEMENTED(ctx == nullptr);
+	if (params == nullptr || ctx == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 	if (!audioout2_valid_context_capacity(*params)) {
 		return AUDIO_OUT2_ERROR_INVALID_PARAM;
 	}
@@ -608,7 +612,9 @@ int KYTY_SYSV_ABI AudioOut2ContextSetAttributes(AudioOut2ContextHandle    ctx,
                                                 uint32_t                  num) {
 	PRINT_NAME();
 	LOGF("\t ctx = 0x%016" PRIx64 ", num = %" PRIu32 "\n", ctx, num);
-	EXIT_NOT_IMPLEMENTED(num != 0 && attributes == nullptr);
+	if (num != 0 && attributes == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 	return OK;
 }
 
@@ -684,8 +690,9 @@ int KYTY_SYSV_ABI AudioOut2ContextGetQueueLevel(AudioOut2ContextHandle ctx, uint
 // PPSA28180 calls this with rsp off the 16-byte alignment; the host device open needs it.
 [[gnu::force_align_arg_pointer]] int KYTY_SYSV_ABI AudioOut2PortCreate(
     AudioOut2ContextHandle ctx, const AudioOut2PortParam* params, AudioOut2PortHandle* port) {
-	EXIT_NOT_IMPLEMENTED(params == nullptr);
-	EXIT_NOT_IMPLEMENTED(port == nullptr);
+	if (params == nullptr || port == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 
 	const auto audio_format = audioout2_data_format_to_audio_format(params->data_format);
 	const auto audio_type   = audioout2_port_type_to_audio_out_type(params->port_type);
@@ -881,7 +888,9 @@ int KYTY_SYSV_ABI AudioOut2PortSetAttributes(AudioOut2PortHandle       port,
 int KYTY_SYSV_ABI AudioOut2PortGetState(AudioOut2PortHandle port, AudioOut2PortState* state) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(state == nullptr);
+	if (state == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 
 	std::memset(state, 0, sizeof(AudioOut2PortState));
 	state->output          = 1;
@@ -896,15 +905,14 @@ int KYTY_SYSV_ABI AudioOut2PortGetState(AudioOut2PortHandle port, AudioOut2PortS
 	}
 	g_audioout2_state_mutex.Unlock();
 
-	// LOGF("\t port = 0x%016" PRIx64 "\n", port);
-	// LOGF("\t num_channels = %" PRIu8 "\n", state->num_channels);
-
 	return OK;
 }
 
 int KYTY_SYSV_ABI AudioOut2GetSystemState(AudioOut2SystemState* state) {
 	PRINT_NAME();
-	EXIT_NOT_IMPLEMENTED(state == nullptr);
+	if (state == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 	std::memset(state, 0, sizeof(AudioOut2SystemState));
 	return OK;
 }
@@ -978,7 +986,9 @@ size_t KYTY_SYSV_ABI AudioOut2GetSpeakerArrayMemorySize(uint32_t num_speakers, u
 int KYTY_SYSV_ABI AudioOut2SpeakerArrayCreate(AudioOut2SpeakerArrayHandle* handle,
                                               const void* vbap_params, const void* ambi_params) {
 	PRINT_NAME();
-	EXIT_NOT_IMPLEMENTED(handle == nullptr);
+	if (handle == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 
 	*handle = nullptr;
 
@@ -1024,7 +1034,9 @@ int KYTY_SYSV_ABI AudioOut2GetSpeakerArrayCoefficients(
     AudioOut2SpeakerArrayHandle handle, AudioOut2Position pos, float spread, float* coefficients,
     uint32_t num_coefficients, uint8_t height_aware, float downmix_spread_radius) {
 	PRINT_NAME();
-	EXIT_NOT_IMPLEMENTED(coefficients == nullptr && num_coefficients != 0);
+	if (coefficients == nullptr && num_coefficients != 0) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 
 	if (coefficients != nullptr) {
 		std::fill(coefficients, coefficients + num_coefficients, 0.0f);
@@ -1050,7 +1062,9 @@ int KYTY_SYSV_ABI AudioOut2GetSpeakerArrayAmbisonicsCoefficients(AudioOut2Speake
                                                                  float*   coefficients,
                                                                  uint32_t num_coefficients) {
 	PRINT_NAME();
-	EXIT_NOT_IMPLEMENTED(coefficients == nullptr && num_coefficients != 0);
+	if (coefficients == nullptr && num_coefficients != 0) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 
 	if (coefficients != nullptr) {
 		std::fill(coefficients, coefficients + num_coefficients, 0.0f);
@@ -1067,7 +1081,9 @@ int KYTY_SYSV_ABI AudioOut2GetSpeakerArrayAmbisonicsCoefficients(AudioOut2Speake
 }
 
 int KYTY_SYSV_ABI AudioOut2GetSpeakerInfo(AudioOut2SpeakerInfo* info, uint32_t flags) {
-	EXIT_NOT_IMPLEMENTED(info == nullptr);
+	if (info == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 	std::memset(info, 0, sizeof(AudioOut2SpeakerInfo));
 	info->type             = 0;
 	info->available_bits   = 0x03;

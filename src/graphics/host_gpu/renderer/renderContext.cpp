@@ -3,6 +3,7 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "libs/errno.h"
 
@@ -168,10 +169,26 @@ void RenderContext::RunGarbageCollector() {
 		m_fault_process_pending = false;
 		m_buffer_cache.ProcessFaultBuffer();
 	}
+	const auto prev_tier = m_graphics.GetLastMemoryPressureTier();
+	const auto pressure  = m_graphics.EvaluateMemoryPressure();
+	if (pressure.tier != prev_tier) {
+		const char* label = pressure.tier == MemoryPressureTier::Critical ? "CRITICAL"
+		                  : pressure.tier == MemoryPressureTier::Elevated ? "ELEVATED"
+		                                                                  : "NORMAL";
+		LOGF("Memory pressure -> %s (%.1f%% of VMA budget: %" PRIu64 " / %" PRIu64 " MiB)\n",
+		     label, pressure.peak_ratio * 100.0, pressure.total_usage / (1024ull * 1024ull),
+		     pressure.total_budget / (1024ull * 1024ull));
+	}
+	const bool force_gc   = ConsumeHudForceGc();
+	const auto gc_tier    = force_gc ? MemoryPressureTier::Critical : pressure.tier;
 	m_image_heap.RunGarbageCollector();
 	m_texture_cache.ProcessDownloadImages();
-	m_texture_cache.RunGarbageCollector();
-	m_buffer_cache.RunGarbageCollector();
+	m_texture_cache.RunGarbageCollector(gc_tier);
+	m_buffer_cache.RunGarbageCollector(gc_tier);
+	if (ConsumeHudPipelineCacheFlush()) {
+		m_pipeline_cache.RequestFlushDriverCache();
+	}
+	m_pipeline_cache.OnFrameIdle();
 	if (m_ray_tracing) {
 		m_ray_tracing->RunGarbageCollector();
 	}

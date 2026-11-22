@@ -1,6 +1,8 @@
 #include "loader/gamePatch.h"
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
+#include "common/gameProfile.h"
 #include "common/stringUtils.h"
 #include "common/virtualMemory.h"
 #include "kernel/memory.h"
@@ -247,6 +249,36 @@ bool ApplyWrites(Plan* plan, const Program& program, std::string* error) {
 
 bool Apply(const std::filesystem::path& plan_path, Program* main_program,
            const std::vector<Program*>& programs) {
+	// First try our native Beyond-PS5 patches/<TitleID>.json bundle format.
+	{
+		Common::GamePatchBundle bundle;
+		std::string             bundle_err;
+		if (Common::LoadPatchBundle(plan_path, bundle, &bundle_err)) {
+			if (main_program == nullptr || main_program->base_vaddr == 0 ||
+			    main_program->mapped_size == 0) {
+				::printf("Game patch error: main executable is not loaded\n");
+				return false;
+			}
+			std::span<uint8_t> mem(reinterpret_cast<uint8_t*>(main_program->base_vaddr),
+			                       main_program->mapped_size);
+			std::vector<Common::AppliedPatchBackup> backups;
+			uint32_t                                fps_override = 0;
+			if (!Common::ApplyPatchBundleToBuffer(bundle, Config::GetEnabledPatches(), mem,
+			                                      backups, &fps_override, &bundle_err)) {
+				::printf("Game patch error (%s): %s\n", bundle.title_id.c_str(),
+				         bundle_err.c_str());
+				return false;
+			}
+			for (const auto& b: backups) {
+				(void)Common::VirtualMemory::FlushInstructionCache(
+				    main_program->base_vaddr + b.offset, b.saved_original.size());
+			}
+			::printf("Applied %zu memory patch write(s) from %s (FPS override: %u)\n",
+			         backups.size(), plan_path.string().c_str(), fps_override);
+			return true;
+		}
+	}
+
 	Plan        plan;
 	std::string error;
 	if (!LoadPlan(plan_path, &plan, &error) || !ValidateGame(plan, main_program, &error)) {

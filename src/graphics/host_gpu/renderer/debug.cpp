@@ -174,10 +174,24 @@ static void RtCheck(const HW::RenderTarget& rt) {
 				logged = true;
 			}
 		}
-		EXIT_NOT_IMPLEMENTED(rt.attrib3.write_vrs_rate_hint_to_cmask);
-
-		EXIT_NOT_IMPLEMENTED(rt.dcc.overwrite_combiner_disable != false);
-		EXIT_NOT_IMPLEMENTED(rt.dcc.dcc_clear_key_enable != false);
+		if (rt.attrib3.write_vrs_rate_hint_to_cmask) {
+			static bool logged = false;
+			if (!logged) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "RenderTarget: ignoring PS5 write_vrs_rate_hint_to_cmask\n");
+				logged = true;
+			}
+		}
+		if (rt.dcc.overwrite_combiner_disable || rt.dcc.dcc_clear_key_enable) {
+			static bool logged = false;
+			if (!logged) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "RenderTarget: accepting extended DCC flags (oc_dis=%d, clear_key=%d)\n",
+				           rt.dcc.overwrite_combiner_disable ? 1 : 0,
+				           rt.dcc.dcc_clear_key_enable ? 1 : 0);
+				logged = true;
+			}
+		}
 	}
 }
 
@@ -257,9 +271,17 @@ static void ClipPrint(const char* func, const HW::ClipControl& c) {
 static void ClipCheck(const HW::ClipControl& c) {
 	// dx_linear_attr_clip_enable preserves linear (noperspective) attributes at clip-generated
 	// vertices, which Vulkan provides as part of clipping and interpolation.
-	EXIT_NOT_IMPLEMENTED(c.user_clip_plane_mode != 0 || c.vertex_kill_any ||
-	                     c.user_clip_plane_negate_y || c.user_clip_plane_cull_only ||
-	                     c.cull_on_clipping_error_disable || c.force_viewport_index_from_vs_enable);
+	if (c.user_clip_plane_mode != 0 || c.vertex_kill_any || c.user_clip_plane_negate_y ||
+	    c.user_clip_plane_cull_only || c.cull_on_clipping_error_disable ||
+	    c.force_viewport_index_from_vs_enable) {
+		static bool logged = false;
+		if (!logged) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "ClipCheck: accepting extended PA_CL_CLIP_CNTL flags (mode=%u, vkill=%d)\n",
+			           c.user_clip_plane_mode, c.vertex_kill_any ? 1 : 0);
+			logged = true;
+		}
+	}
 }
 
 static void RcPrint(const char* func, const HW::RenderControl& c) {
@@ -313,7 +335,14 @@ static void McCheck(const HW::ModeControl& c) {
 			logged = true;
 		}
 	}
-	EXIT_NOT_IMPLEMENTED(c.persp_corr_dis != false);
+	if (c.persp_corr_dis) {
+		static bool logged = false;
+		if (!logged) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "McCheck: ignoring PA_SU_SC_MODE_CNTL.PERSP_CORR_DIS\n");
+			logged = true;
+		}
+	}
 }
 
 static void BcPrint(const char* func, const HW::BlendControl& c, const HW::BlendColor& color,
@@ -531,7 +560,13 @@ static void VpCheck(const HW::ScreenViewport& vp, const HW::ScanModeControl& smc
 			LOGF("\t warning: unsupported PS5 MSAA raster controls use native Vulkan defaults\n");
 		}
 	}
-	EXIT_NOT_IMPLEMENTED(smc.line_stipple_enable);
+	if (smc.line_stipple_enable) {
+		static bool logged = false;
+		if (!logged) {
+			LOGF_COLOR(Log::Color::Yellow, "VpCheck: ignoring unsupported line_stipple_enable\n");
+			logged = true;
+		}
+	}
 
 	if (vp.transform_control != 1087) {
 		static uint32_t log_count = 0;

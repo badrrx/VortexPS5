@@ -113,7 +113,11 @@ vk::ComponentMapping TextureGetComponentMapping(uint32_t                        
 			case Prospero::CompSwizzle::kGreen: return storage_components[1];
 			case Prospero::CompSwizzle::kBlue: return storage_components[2];
 			case Prospero::CompSwizzle::kAlpha: return storage_components[3];
-			default: EXIT("unknown swizzle: %u\n", static_cast<uint32_t>(selector));
+			default:
+				LOGF_COLOR(Log::Color::Yellow,
+				           "Texture: unknown swizzle selector %u — falling back to Identity\n",
+				           static_cast<uint32_t>(selector));
+				return vk::ComponentSwizzle::eIdentity;
 		}
 	};
 	return {resolve(0), resolve(1), resolve(2), resolve(3)};

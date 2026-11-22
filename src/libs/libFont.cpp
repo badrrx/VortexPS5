@@ -941,8 +941,9 @@ static uint32_t normalize_bitmap_font_code(uint32_t code) {
 
 static void init_image(std::vector<uint8_t>* image, FontTransImage* trans_image, uint32_t code,
                        const FontState* font) {
-	EXIT_NOT_IMPLEMENTED(image == nullptr);
-	EXIT_NOT_IMPLEMENTED(trans_image == nullptr);
+	if (image == nullptr || trans_image == nullptr) {
+		return;
+	}
 
 	if (init_stb_image(image, trans_image, code, const_cast<FontState*>(font))) {
 		return;

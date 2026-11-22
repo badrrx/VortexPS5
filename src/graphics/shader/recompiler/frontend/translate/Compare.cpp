@@ -84,4 +84,53 @@ void Translator::EmitFloatClassCompare(const Decoder::Instruction& inst, bool ha
 	EmitCompareResult(inst, IR::U1(ir.Emit(opcode, {value, mask})), false);
 }
 
+void Translator::EmitFloatClassCompare64(const Decoder::Instruction& inst) {
+	// RDNA 2 V_CMP_CLASS_F64 / V_CMPX_CLASS_F64:
+	//   bit 0: sNaN, bit 1: qNaN, bit 2: -Inf, bit 3: -Normal, bit 4: -Subnormal,
+	//   bit 5: -0,   bit 6: +0,   bit 7: +Subnormal, bit 8: +Normal, bit 9: +Inf
+	const auto value = ReadOperand(inst.src0, IR::Type::F64);
+	const auto mask  = ReadU32(inst.src1);
+	const auto bits  = ir.Emit(IR::ValueOpcode::BitCastU64F64, {value});
+	const auto lo    = IR::U32(ir.Emit(IR::ValueOpcode::CompositeExtractU64, {bits, IR::Value(0u)}));
+	const auto hi    = IR::U32(ir.Emit(IR::ValueOpcode::CompositeExtractU64, {bits, IR::Value(1u)}));
+
+	const auto neg = ir.INotEqual(ir.BitwiseAnd(hi, IR::U32(IR::Value(0x80000000u))), IR::U32(IR::Value(0u)));
+	const auto pos = ir.LogicalNot(neg);
+	const auto exp = IR::U32(ir.Emit(IR::ValueOpcode::BitFieldUExtract, {hi, IR::Value(20u), IR::Value(11u)}));
+	const auto mant_hi = ir.BitwiseAnd(hi, IR::U32(IR::Value(0x000fffffu)));
+	const auto mant_zero =
+	    ir.LogicalAnd(ir.IEqual(mant_hi, IR::U32(IR::Value(0u))), ir.IEqual(lo, IR::U32(IR::Value(0u))));
+	const auto mant_nz = ir.LogicalNot(mant_zero);
+	const auto qbit    = ir.INotEqual(ir.BitwiseAnd(hi, IR::U32(IR::Value(0x00080000u))), IR::U32(IR::Value(0u)));
+
+	const auto exp_max  = ir.IEqual(exp, IR::U32(IR::Value(0x7ffu)));
+	const auto exp_zero = ir.IEqual(exp, IR::U32(IR::Value(0u)));
+	const auto exp_norm = ir.LogicalAnd(ir.LogicalNot(exp_max), ir.LogicalNot(exp_zero));
+
+	const auto is_snan    = ir.LogicalAnd(exp_max, ir.LogicalAnd(mant_nz, ir.LogicalNot(qbit)));
+	const auto is_qnan    = ir.LogicalAnd(exp_max, qbit);
+	const auto is_inf     = ir.LogicalAnd(exp_max, mant_zero);
+	const auto is_zero    = ir.LogicalAnd(exp_zero, mant_zero);
+	const auto is_subnorm = ir.LogicalAnd(exp_zero, mant_nz);
+
+	auto class_bits = IR::U32(IR::Value(0u));
+	auto add_bit    = [&](IR::U1 cond, uint32_t bit) {
+		class_bits = ir.BitwiseOr(class_bits,
+		                          ir.Select(cond, IR::U32(IR::Value(1u << bit)), IR::U32(IR::Value(0u))));
+	};
+	add_bit(is_snan, 0u);
+	add_bit(is_qnan, 1u);
+	add_bit(ir.LogicalAnd(neg, is_inf), 2u);
+	add_bit(ir.LogicalAnd(neg, exp_norm), 3u);
+	add_bit(ir.LogicalAnd(neg, is_subnorm), 4u);
+	add_bit(ir.LogicalAnd(neg, is_zero), 5u);
+	add_bit(ir.LogicalAnd(pos, is_zero), 6u);
+	add_bit(ir.LogicalAnd(pos, is_subnorm), 7u);
+	add_bit(ir.LogicalAnd(pos, exp_norm), 8u);
+	add_bit(ir.LogicalAnd(pos, is_inf), 9u);
+
+	const auto matched = ir.INotEqual(ir.BitwiseAnd(class_bits, mask), IR::U32(IR::Value(0u)));
+	EmitCompareResult(inst, matched, false);
+}
+
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend

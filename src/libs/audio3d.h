@@ -11,15 +11,21 @@ namespace Audio3d {
 struct Audio3dOpenParameters;
 
 int KYTY_SYSV_ABI  Audio3dInitialize(int64_t reserved);
+int KYTY_SYSV_ABI  Audio3dTerminate();
 void KYTY_SYSV_ABI Audio3dGetDefaultOpenParameters(Audio3dOpenParameters* p);
 int KYTY_SYSV_ABI  Audio3dPortOpen(int user_id, const Audio3dOpenParameters* parameters,
                                    uint32_t* id);
+int KYTY_SYSV_ABI  Audio3dPortClose(uint32_t port_id);
 int KYTY_SYSV_ABI  Audio3dPortSetAttribute(uint32_t port_id, uint32_t attribute_id,
                                            const void* attribute, size_t attribute_size);
 int KYTY_SYSV_ABI  Audio3dPortGetQueueLevel(uint32_t port_id, uint32_t* queue_level,
                                             uint32_t* queue_available);
 int KYTY_SYSV_ABI  Audio3dPortAdvance(uint32_t port_id);
 int KYTY_SYSV_ABI  Audio3dPortPush(uint32_t port_id, uint32_t blocking);
+int KYTY_SYSV_ABI  Audio3dObjectReserve(uint32_t port_id, uint32_t* object_id);
+int KYTY_SYSV_ABI  Audio3dObjectUnreserve(uint32_t port_id, uint32_t object_id);
+int KYTY_SYSV_ABI  Audio3dObjectSetAttributes(uint32_t port_id, uint32_t object_id,
+                                              size_t num_attributes, const void* attributes);
 
 } // namespace Audio3d
 

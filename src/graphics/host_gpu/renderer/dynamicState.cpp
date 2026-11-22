@@ -145,6 +145,27 @@ void DynamicState::Commit(const GraphicContext& graphics, vk::CommandBuffer cmdb
 		dirty_state.feedback_loop_aspects = false;
 		cmdbuf.setAttachmentFeedbackLoopEnableEXT(feedback_loop_aspects);
 	}
+	if (dirty_state.polygon_mode && graphics.eds3_polygon_mode) {
+		dirty_state.polygon_mode = false;
+		cmdbuf.setPolygonModeEXT(polygon_mode);
+	}
+	if (dirty_state.depth_clip_enable && graphics.eds3_depth_clip_enable) {
+		dirty_state.depth_clip_enable = false;
+		cmdbuf.setDepthClipEnableEXT(depth_clip_enable);
+	}
+	if (dirty_state.color_blend_states && color_attachment_count > 0) {
+		dirty_state.color_blend_states = false;
+		if (graphics.eds3_color_blend_enable) {
+			cmdbuf.setColorBlendEnableEXT(0, color_attachment_count, color_blend_enables.data());
+		}
+		if (graphics.eds3_color_blend_equation) {
+			cmdbuf.setColorBlendEquationEXT(0, color_attachment_count,
+			                                color_blend_equations.data());
+		}
+		if (graphics.eds3_color_write_mask) {
+			cmdbuf.setColorWriteMaskEXT(0, color_attachment_count, color_write_masks.data());
+		}
+	}
 }
 
 } // namespace Libs::Graphics

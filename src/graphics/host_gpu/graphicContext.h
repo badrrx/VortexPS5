@@ -6,6 +6,7 @@
 #include "common/threads.h"
 #include "graphics/host_gpu/vulkanCommon.h" // IWYU pragma: export
 
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <span>
@@ -16,6 +17,19 @@
 namespace Libs::Graphics {
 
 struct VulkanImage;
+
+enum class MemoryPressureTier : uint8_t {
+	Normal   = 0, // < 75% VMA heap budget
+	Elevated = 1, // 75% .. 88% VMA heap budget
+	Critical = 2, // > 88% VMA heap budget
+};
+
+struct MemoryPressureSnapshot {
+	MemoryPressureTier tier         = MemoryPressureTier::Normal;
+	double             peak_ratio   = 0.0;
+	uint64_t           total_usage  = 0;
+	uint64_t           total_budget = 0;
+};
 
 inline constexpr uint32_t VULKAN_TARGET_API_VERSION = VK_API_VERSION_1_3;
 
@@ -45,6 +59,14 @@ struct GraphicContext {
 	bool                               supports_block_texel_view              = false;
 	bool                                      mesh_shader_enabled                   = false;
 	vk::PhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties                = {};
+	bool                                      extended_dynamic_state3_enabled       = false;
+	bool                                      eds3_polygon_mode                     = false;
+	bool                                      eds3_depth_clip_enable                = false;
+	bool                                      eds3_color_blend_enable               = false;
+	bool                                      eds3_color_blend_equation             = false;
+	bool                                      eds3_color_write_mask                 = false;
+	bool                                      graphics_pipeline_library_enabled     = false;
+	bool                                      shader_object_enabled                 = false;
 	uint32_t                           subgroup_size                         = 0;
 	uint32_t                           min_subgroup_size                     = 0;
 	uint32_t                           max_subgroup_size                     = 0;
@@ -52,8 +74,13 @@ struct GraphicContext {
 	uint32_t                           device_clock_period_ps                = 0;
 	vk::DescriptorSetLayout            image_heap_layout                     = nullptr;
 	Common::Mutex                      queue_mutex;
-	uint32_t                           queue_family = static_cast<uint32_t>(-1);
-	vk::Queue                          queue        = nullptr;
+	uint32_t                           queue_family               = static_cast<uint32_t>(-1);
+	vk::Queue                          queue                      = nullptr;
+	Common::Mutex                      async_compute_queue_mutex;
+	uint32_t                           async_compute_queue_family = static_cast<uint32_t>(-1);
+	uint32_t                           async_compute_queue_index  = 0;
+	vk::Queue                          async_compute_queue        = nullptr;
+	bool                               has_dedicated_async_compute = false;
 
 	[[nodiscard]] const vk::PhysicalDeviceProperties& GetPhysicalDeviceProperties() const {
 		return physical_device_properties;
@@ -119,6 +146,10 @@ struct GraphicContext {
 		bool     device_local = false;
 	};
 	[[nodiscard]] uint32_t GetHeapUsage(std::span<HeapUsage, VK_MAX_MEMORY_HEAPS> heaps) const;
+	[[nodiscard]] MemoryPressureSnapshot EvaluateMemoryPressure() const;
+	[[nodiscard]] MemoryPressureTier     GetLastMemoryPressureTier() const noexcept {
+		return static_cast<MemoryPressureTier>(m_last_pressure_tier.load(std::memory_order_relaxed));
+	}
 	[[nodiscard]] bool     CreateImage(const vk::ImageCreateInfo& info, VulkanImage& image);
 	void                   DeleteImage(VulkanImage& image);
 
@@ -126,6 +157,7 @@ struct GraphicContext {
 	uint32_t screen_height = 0;
 
 private:
+	mutable std::atomic<uint8_t>                       m_last_pressure_tier {0};
 	mutable std::mutex                                 m_format_properties_mutex;
 	mutable std::map<vk::Format, vk::FormatProperties> m_format_properties;
 	mutable std::mutex                                 m_image_format_properties_mutex;
@@ -159,7 +191,8 @@ struct VulkanImage {
 	VmaAllocation                allocation = nullptr;
 };
 
-
+[[nodiscard]] MemoryPressureSnapshot ClassifyMemoryPressure(
+    std::span<const GraphicContext::HeapUsage> heaps, bool discrete_gpu) noexcept;
 
 } // namespace Libs::Graphics
 

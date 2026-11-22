@@ -240,6 +240,7 @@ OverlaySession               g_session;
 SDL_Window*                  g_input_window               = nullptr;
 struct TrophyNotification {
 	std::string            name;
+	std::string            description;
 	int32_t                grade;
 	std::vector<std::byte> icon_png;
 };
@@ -845,10 +846,11 @@ bool ProcessSystemOverlayInput(const SDL_Event& event) {
 }
 
 void NotifyTrophyUnlocked(std::string_view name, int32_t grade,
-                          std::span<const std::byte> icon_png) {
+                          std::span<const std::byte> icon_png, std::string_view description) {
 	std::scoped_lock lock(g_trophy_notification_mutex);
 	g_trophy_notifications.push_back(
-	    {std::string(name), grade, std::vector<std::byte>(icon_png.begin(), icon_png.end())});
+	    {std::string(name), std::string(description), grade,
+	     std::vector<std::byte>(icon_png.begin(), icon_png.end())});
 	g_trophy_notification_active.store(true, std::memory_order_release);
 }
 
@@ -1782,17 +1784,20 @@ struct SystemOverlay::Impl {
 			              line.data(), line.data() + line.size());
 			line_y += line_height;
 		}
-		const float subtitle_size = 20.0f * screen_scale;
+		const std::string& sub_text = !trophy_notification->description.empty()
+		                                  ? trophy_notification->description
+		                                  : trophy_notification_subtitle;
+		const float subtitle_size = 18.0f * screen_scale;
 		const float subtitle_width =
 		    ImGui::GetFont()
 		        ->CalcTextSizeA(subtitle_size, std::numeric_limits<float>::max(), 0.0f,
-		                        trophy_notification_subtitle.c_str())
+		                        sub_text.c_str())
 		        .x;
 		const float available_width = std::max(1.0f, width - text_offset - text_padding);
 		const float fitted_size = std::max(
 		    1.0f, subtitle_size * std::min(1.0f, available_width / std::max(1.0f, subtitle_width)));
 		draw->AddText(nullptr, fitted_size, {text_left, line_y + 8.0f * screen_scale},
-		              fade(176, 180, 192, 255), trophy_notification_subtitle.c_str());
+		              fade(176, 180, 192, 255), sub_text.c_str());
 		draw->PopClipRect();
 	}
 

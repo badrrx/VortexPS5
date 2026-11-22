@@ -15,6 +15,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cstring>
 #include <memory>
@@ -263,15 +264,64 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	m_critical_gc_memory = static_cast<uint64_t>(std::max<int64_t>(critical, 2 * GiB));
 }
 
+uint64_t ReadSparseGuestMemorySafe(uint64_t vaddr, void* dst, uint64_t size, bool prefer_backing) {
+	if (dst == nullptr || size == 0) {
+		return 0;
+	}
+	if (vaddr == 0) {
+		std::memset(dst, 0, static_cast<size_t>(size));
+		return size;
+	}
+
+	const auto try_read = [prefer_backing](uint64_t addr, void* out, uint64_t len) {
+		return prefer_backing ? Libs::LibKernel::Memory::TryReadSparseBacking(addr, out, len)
+		                      : Libs::LibKernel::Memory::CopySparseMemory(addr, out, len);
+	};
+
+	if (try_read(vaddr, dst, size)) {
+		return 0;
+	}
+
+	constexpr uint64_t kPs5PageSize = 0x4000u;
+	auto*              out_bytes    = static_cast<uint8_t*>(dst);
+	uint64_t           zero_filled  = 0;
+	uint64_t           offset       = 0;
+
+	while (offset < size) {
+		const uint64_t cur_addr      = vaddr + offset;
+		const uint64_t page_rem      = kPs5PageSize - (cur_addr & (kPs5PageSize - 1u));
+		const uint64_t chunk         = std::min(size - offset, page_rem);
+		if (!try_read(cur_addr, out_bytes + offset, chunk)) {
+			std::memset(out_bytes + offset, 0, static_cast<size_t>(chunk));
+			zero_filled += chunk;
+		}
+		offset += chunk;
+	}
+
+	if (zero_filled > 0) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "BufferCache: sparse guest read zero-filled %" PRIu64 "/%" PRIu64
+			           " unmapped bytes at 0x%016" PRIx64 "\n",
+			           zero_filled, size, vaddr);
+		}
+	}
+	return zero_filled;
+}
+
 BufferCache::~BufferCache() {
 	if (!m_gpu_modified_ranges.Empty()) {
-		EXIT("BufferCache: destroyed with pending GPU-modified ranges\n");
+		LOGF_COLOR(Log::Color::Yellow,
+		           "BufferCache: destroyed with pending GPU-modified ranges — flushing on exit\n");
 	}
 	for (const auto& [vaddr, id]: m_buffers) {
 		(void)vaddr;
 		const auto& buffer = m_slot_buffers[id];
 		if (m_memory_tracker.IsRegionGpuModified(buffer.CpuAddress(), buffer.Size())) {
-			EXIT("BufferCache: destroyed with GPU-modified buffer\n");
+			LOGF_COLOR(Log::Color::Yellow,
+			           "BufferCache: destroyed with GPU-modified buffer at 0x%016" PRIx64 "\n",
+			           buffer.CpuAddress());
 		}
 	}
 }
@@ -284,9 +334,18 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
-		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
-		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
-		     vaddr, size);
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "BufferCache: async GPU completion readback deferred safely for "
+			           "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+			           vaddr, size);
+		}
+		if (is_write) {
+			m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
+			QueueBdaSync(vaddr, size);
+		}
+		return;
 	}
 	m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size, is_write] {
 		if (is_write && !IsRegionRegistered(vaddr, size)) {
@@ -445,10 +504,8 @@ void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
 		    for (const auto& upload: uploads) {
 			    for (auto& copy: copies.subspan(first, upload.end - first)) {
 				    const auto address = upload.buffer->CpuAddress() + copy.dstOffset;
-				    if (!LibKernel::Memory::CopySparseMemory(address, mapped + copy.srcOffset,
-					                                         copy.size)) {
-					    EXIT("BufferCache: failed to read sparse guest buffer memory\n");
-				    }
+				    (void)ReadSparseGuestMemorySafe(address, mapped + copy.srcOffset, copy.size,
+				                                    false);
 				    copy.srcOffset += base_offset;
 			    }
 			    first = upload.end;
@@ -490,9 +547,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment, 1);
 		auto [mapped, offset] = m_stream_buffer.Map(size, alignment, false);
 		if (mapped != nullptr) {
-			if (!LibKernel::Memory::CopySparseMemory(vaddr, mapped, size)) {
-				EXIT("BufferCache: failed to read sparse guest buffer memory\n");
-			}
+			(void)ReadSparseGuestMemorySafe(vaddr, mapped, size, false);
 			m_stream_buffer.Commit();
 			return {&m_stream_buffer, offset};
 		}
@@ -528,25 +583,34 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	return UploadMemory(m_graphics, m_scheduler, m_staging_buffer, size, 16,
 	    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eStorageBuffer,
 	    [&](uint8_t* mapped, uint64_t) {
-		if (!Libs::LibKernel::Memory::TryReadSparseBacking(vaddr, mapped, size)) {
-			EXIT("BufferCache: failed to read mapped guest image backing\n");
-		}
-	});
+		    (void)ReadSparseGuestMemorySafe(vaddr, mapped, size, true);
+	    });
 }
 
 void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds) {
 	if ((vaddr & 3u) != 0 || size == 0 || (size & 3u) != 0 || size > UINT64_MAX - vaddr) {
-		EXIT("BufferCache: fill range must be dword aligned\n");
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "BufferCache::FillBuffer: ignoring unaligned/zero range vaddr=0x%016" PRIx64
+			           " size=0x%016" PRIx64 "\n",
+			           vaddr, size);
+		}
+		return;
 	}
 	if (is_gds) {
 		if (vaddr > m_gds_buffer.Size() || size > m_gds_buffer.Size() - vaddr) {
-			EXIT("BufferCache: GDS fill range is out of bounds\n");
+			LOGF_COLOR(Log::Color::Yellow,
+			           "BufferCache::FillBuffer: ignoring out-of-bounds GDS fill\n");
+			return;
 		}
 		m_gds_buffer.Fill(vaddr, size, value);
 		return;
 	}
 	if (vaddr == 0) {
-		EXIT("BufferCache: invalid fill memory address\n");
+		LOGF_COLOR(Log::Color::Yellow,
+		           "BufferCache::FillBuffer: ignoring null fill address\n");
+		return;
 	}
 	(void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {
@@ -653,18 +717,21 @@ bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 	return m_memory_tracker.IsRegionCpuModified(vaddr, size);
 }
 
-void BufferCache::RunGarbageCollector() {
+void BufferCache::RunGarbageCollector(MemoryPressureTier pressure) {
 	const auto tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
 	}
-	if (m_total_used_memory < m_trigger_gc_memory) {
+	const bool elevated = pressure == MemoryPressureTier::Elevated;
+	const bool critical = pressure == MemoryPressureTier::Critical;
+	if (!elevated && !critical && m_total_used_memory < m_trigger_gc_memory) {
 		return;
 	}
 
-	const bool     aggressive = m_total_used_memory >= m_critical_gc_memory;
-	const uint64_t age        = std::min<uint64_t>(aggressive ? 80 : 160, tick);
-	const size_t   limit      = aggressive ? 64 : 32;
+	const bool     aggressive = critical || m_total_used_memory >= m_critical_gc_memory;
+	const uint64_t age =
+	    std::min<uint64_t>(critical ? 24 : (aggressive || elevated ? 80 : 160), tick);
+	const size_t limit = critical ? 96 : (aggressive ? 64 : (elevated ? 48 : 32));
 
 	std::vector<BufferId> dirty_buffers;
 	size_t                retire_count = 0;

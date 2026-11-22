@@ -4,11 +4,13 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "emulator.h"
+#include "graphics/presentation/homeDashboard.h"
 #include "kytyGitVersion.h"
 
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string_view>
 #include <vector>
@@ -90,6 +92,12 @@ static void PrintUsage() {
 	::printf("  --sync-raw-image-buffers             Synchronize raw reads of GPU images.\n");
 	::printf(
 	    "  --flush-draws <num>                  Submit GPU work every <num> draws; 0 is off.\n");
+	::printf(
+	    "  --guest-memory-mb <num>              Guest RAM budget in MiB (4096-14016); 0 is auto.\n");
+	::printf("  --upscaler <Off|CAS|FSR1>            Vulkan 1.3 compute post-upscaler. Default: Off.\n");
+	::printf("  --sharpness <0.0-1.0>                CAS/FSR sharpness intensity. Default: 0.6.\n");
+	::printf("  --res-scale <1.0|1.5|2.0>            Presentation resolution scale. Default: 1.0.\n");
+	::printf("  --fps-cap <num>                      FPS / vblank target override (0 = native).\n");
 	::printf("  --no-trophy-notifications            Disable trophy unlock toasts and their sound.\n");
 	::printf(
 	    "  --trophy-duration <seconds>          Trophy toast duration, 5-10. Default: 6.\n");
@@ -412,6 +420,40 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid draw count: %s\n", value.c_str());
 				return false;
 			}
+		} else if (arg == "--guest-memory-mb") {
+			if (!ParseUint32(value, options.config.guest_memory_mb)) {
+				::printf("invalid guest memory budget (MiB): %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--upscaler") {
+			if (!ParseEnum(value, options.config.present_upscaler)) {
+				::printf("invalid upscaler mode (expected Off, CAS, or FSR1): %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--sharpness") {
+			char*       end = nullptr;
+			const float s   = std::strtof(value.c_str(), &end);
+			if (end == value.c_str() || *end != '\0' || s < 0.0f || s > 1.0f) {
+				::printf("invalid sharpness (expected 0.0-1.0): %s\n", value.c_str());
+				return false;
+			}
+			options.config.upscaler_sharpness = s;
+		} else if (arg == "--res-scale") {
+			char*       end = nullptr;
+			const float rs  = std::strtof(value.c_str(), &end);
+			if (end == value.c_str() || *end != '\0' || rs < 1.0f || rs > 2.0f) {
+				::printf("invalid resolution scale (expected 1.0-2.0): %s\n", value.c_str());
+				return false;
+			}
+			options.config.resolution_scale = rs;
+		} else if (arg == "--fps-cap") {
+			if (!ParseUint32(value, options.config.fps_cap)) {
+				::printf("invalid fps cap: %s\n", value.c_str());
+				return false;
+			}
+			if (options.config.fps_cap > 0) {
+				options.config.vblank_frequency = options.config.fps_cap;
+			}
 		} else if (arg == "--trophy-duration") {
 			if (!ParseUint32(value, options.config.trophy_duration_seconds)) {
 				::printf("invalid trophy duration: %s\n", value.c_str());
@@ -464,8 +506,35 @@ static int Main(int argc, char* argv[]) {
 	RunOptions options;
 	bool       show_help = false;
 
+	// Launching with no arguments opens the native PS5-style Home Dashboard!
 	if (argc < 2) {
-		PrintUsage();
+		const auto dash = Libs::Graphics::RunHomeDashboard("games", 0);
+		if (!dash.launch_requested) {
+			return 0;
+		}
+		options.app0_dir                       = dash.app0_dir;
+		options.elf                            = dash.elf_path;
+		options.config.guest_memory_mb         = dash.guest_memory_mb;
+		options.config.shader_cache_enabled    = dash.shader_cache;
+		options.config.perf_overlay_enabled    = dash.perf_overlay;
+		options.config.present_upscaler        = dash.present_upscaler;
+		options.config.upscaler_sharpness      = dash.upscaler_sharpness;
+		options.config.resolution_scale        = dash.resolution_scale;
+		options.config.fps_cap                 = dash.fps_cap;
+		if (dash.fps_cap > 0) {
+			options.config.vblank_frequency = dash.fps_cap;
+		}
+		options.config.enabled_patches = dash.enabled_patches;
+		Run(options);
+		return 0;
+	}
+
+	if (argc >= 2 && std::string_view(argv[1]) == "--dashboard-demo") {
+		uint32_t frames = 20;
+		if (argc >= 3) {
+			(void)ParseUint32(argv[2], frames);
+		}
+		(void)Libs::Graphics::RunHomeDashboard("games", frames);
 		return 0;
 	}
 

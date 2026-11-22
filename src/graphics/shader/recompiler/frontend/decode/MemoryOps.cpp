@@ -72,10 +72,16 @@ constexpr MemoryOpcodeInfo MUBUF_OPCODE_LIST[] = {
     {0x3fu, Opcode::BUFFER_ATOMIC_FMIN, 1, 32},
     {0x40u, Opcode::BUFFER_ATOMIC_FMAX, 1, 32},
     {0x50u, Opcode::BUFFER_ATOMIC_SWAP_X2, 2, 32},
+    {0x51u, Opcode::BUFFER_ATOMIC_CMPSWAP_X2, 2, 32},
     {0x52u, Opcode::BUFFER_ATOMIC_ADD_X2, 2, 32},
+    {0x53u, Opcode::BUFFER_ATOMIC_SUB_X2, 2, 32},
+    {0x55u, Opcode::BUFFER_ATOMIC_SMIN_X2, 2, 32},
     {0x56u, Opcode::BUFFER_ATOMIC_UMIN_X2, 2, 32},
+    {0x57u, Opcode::BUFFER_ATOMIC_SMAX_X2, 2, 32},
+    {0x58u, Opcode::BUFFER_ATOMIC_UMAX_X2, 2, 32},
     {0x59u, Opcode::BUFFER_ATOMIC_AND_X2, 2, 32},
     {0x5au, Opcode::BUFFER_ATOMIC_OR_X2, 2, 32},
+    {0x5bu, Opcode::BUFFER_ATOMIC_XOR_X2, 2, 32},
     {0x71u, Opcode::BUFFER_GL0_INV, 0, 0},
     {0x72u, Opcode::BUFFER_GL1_INV, 0, 0},
     {0x80u, Opcode::BUFFER_LOAD_FORMAT_D16_X, 1, 16, false, false, true},
@@ -108,6 +114,18 @@ constexpr MemoryOpcodeInfo FLAT_OPCODE_LIST[] = {
     {0x1cu, Opcode::FLAT_STORE_DWORD, 1, 32},    {0x1du, Opcode::FLAT_STORE_DWORDX2, 2, 32},
     {0x1eu, Opcode::FLAT_STORE_DWORDX4, 4, 32},  {0x1fu, Opcode::FLAT_STORE_DWORDX3, 3, 32},
     {0x24u, Opcode::FLAT_LOAD_SHORT_D16, 1, 16}, {0x25u, Opcode::FLAT_LOAD_SHORT_D16_HI, 1, 16},
+    {0x30u, Opcode::FLAT_ATOMIC_SWAP, 1, 32},    {0x31u, Opcode::FLAT_ATOMIC_CMPSWAP, 1, 32},
+    {0x32u, Opcode::FLAT_ATOMIC_ADD, 1, 32},     {0x33u, Opcode::FLAT_ATOMIC_SUB, 1, 32},
+    {0x35u, Opcode::FLAT_ATOMIC_SMIN, 1, 32},    {0x36u, Opcode::FLAT_ATOMIC_UMIN, 1, 32},
+    {0x37u, Opcode::FLAT_ATOMIC_SMAX, 1, 32},    {0x38u, Opcode::FLAT_ATOMIC_UMAX, 1, 32},
+    {0x39u, Opcode::FLAT_ATOMIC_AND, 1, 32},     {0x3au, Opcode::FLAT_ATOMIC_OR, 1, 32},
+    {0x3bu, Opcode::FLAT_ATOMIC_XOR, 1, 32},
+    {0x50u, Opcode::FLAT_ATOMIC_SWAP_X2, 2, 32}, {0x51u, Opcode::FLAT_ATOMIC_CMPSWAP_X2, 2, 32},
+    {0x52u, Opcode::FLAT_ATOMIC_ADD_X2, 2, 32},  {0x53u, Opcode::FLAT_ATOMIC_SUB_X2, 2, 32},
+    {0x55u, Opcode::FLAT_ATOMIC_SMIN_X2, 2, 32}, {0x56u, Opcode::FLAT_ATOMIC_UMIN_X2, 2, 32},
+    {0x57u, Opcode::FLAT_ATOMIC_SMAX_X2, 2, 32}, {0x58u, Opcode::FLAT_ATOMIC_UMAX_X2, 2, 32},
+    {0x59u, Opcode::FLAT_ATOMIC_AND_X2, 2, 32},  {0x5au, Opcode::FLAT_ATOMIC_OR_X2, 2, 32},
+    {0x5bu, Opcode::FLAT_ATOMIC_XOR_X2, 2, 32},
 };
 
 constexpr MemoryOpcodeInfo DS_OPCODE_LIST[] = {
@@ -422,7 +440,11 @@ void DecodeFlat(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	ApplyMemoryInfo(inst, info);
 	SetRawWords(inst, code, word_index, 2);
 
-	if (lds != 0 || inst.glc || (inst.slc && !IsFlatStoreOpcode(inst.opcode)) || seg == 3u) {
+	const bool is_flat_atomic =
+	    inst.opcode >= Opcode::FLAT_ATOMIC_SWAP && inst.opcode <= Opcode::FLAT_ATOMIC_XOR_X2;
+
+	if (lds != 0 || (inst.glc && !is_flat_atomic) ||
+	    (inst.slc && !IsFlatStoreOpcode(inst.opcode) && !is_flat_atomic) || seg == 3u) {
 		SetUnsupported(inst, Family::FLAT, opcode, "FLAT modifiers or segment are not implemented");
 		return;
 	}
@@ -445,6 +467,10 @@ void DecodeFlat(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	} else {
 		DecodeScalarSource(saddr, pc, inst.src1);
 		inst.src_count = 2;
+	}
+	if (is_flat_atomic) {
+		DecodeVectorGpr(data, inst.src2);
+		inst.src_count = 3;
 	}
 }
 

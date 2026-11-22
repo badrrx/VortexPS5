@@ -495,6 +495,14 @@ void Translator::BUFFER_ATOMIC(const Decoder::Instruction& inst, IR::ValueOpcode
 		                 {resource, address.index, address.offset, address.soffset, desired,
 		                  comparator, ir.GetExec()},
 		                 flags);
+	} else if (opcode == IR::ValueOpcode::BufferAtomicCmpSwap64) {
+		// RDNA 2 BUFFER_ATOMIC_CMPSWAP_X2: vdata[0:1] = replacement (desired), vdata[2:3] = comparator.
+		const auto desired    = ReadU64(data_src);
+		const auto comparator = ReadU64(OffsetOperand(data_src, 2u));
+		result = ir.Emit(opcode,
+		                 {resource, address.index, address.offset, address.soffset, desired,
+		                  comparator, ir.GetExec()},
+		                 flags);
 	} else {
 		const IR::Value value =
 		    memory.data_dwords == 2u ? IR::Value(ReadU64(data_src)) : IR::Value(ReadU32(data_src));
@@ -610,6 +618,41 @@ void Translator::FLAT_STORE(const Decoder::Instruction& inst) {
 		}
 		ir.Emit(opcode, {address.resource, address.low, address.high, value, ir.GetExec()},
 		        AddMemoryInfo(component, inst.pc));
+	}
+}
+
+void Translator::FLAT_ATOMIC(const Decoder::Instruction& inst, IR::ValueOpcode opcode) {
+	auto       memory   = MemoryInfoFromDecoded(inst);
+	const bool is_64    = memory.data_dwords == 2u;
+	memory.data_bits    = is_64 ? 64u : 32u;
+	memory.data_dwords  = 1u;
+	const auto address  = ReadAddressOperands(inst, 0);
+	const auto data_src = inst.src2;
+	const auto flags    = AddMemoryInfo(memory, inst.pc);
+	IR::Value  result;
+	if (opcode == IR::ValueOpcode::AddressAtomicCmpSwap32) {
+		const auto desired    = ReadU32(data_src);
+		const auto comparator = ReadU32(OffsetOperand(data_src, 1u));
+		result = ir.Emit(opcode,
+		                 {address.resource, address.low, address.high, desired, comparator,
+		                  ir.GetExec()},
+		                 flags);
+	} else if (opcode == IR::ValueOpcode::AddressAtomicCmpSwap64) {
+		const auto desired    = ReadU64(data_src);
+		const auto comparator = ReadU64(OffsetOperand(data_src, 2u));
+		result = ir.Emit(opcode,
+		                 {address.resource, address.low, address.high, desired, comparator,
+		                  ir.GetExec()},
+		                 flags);
+	} else {
+		const IR::Value value =
+		    is_64 ? IR::Value(ReadU64(data_src)) : IR::Value(ReadU32(data_src));
+		result = ir.Emit(opcode,
+		                 {address.resource, address.low, address.high, value, ir.GetExec()},
+		                 flags);
+	}
+	if (inst.glc) {
+		WriteOperand(inst.dst, result);
 	}
 }
 
@@ -1025,20 +1068,30 @@ void Translator::EmitMemory(const Decoder::Instruction& inst) {
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicCmpSwap32);
 		case Decoder::Opcode::BUFFER_ATOMIC_SWAP_X2:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicSwap64);
+		case Decoder::Opcode::BUFFER_ATOMIC_CMPSWAP_X2:
+			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicCmpSwap64);
 		case Decoder::Opcode::BUFFER_ATOMIC_ADD:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicIAdd32);
 		case Decoder::Opcode::BUFFER_ATOMIC_SUB:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicISub32);
+		case Decoder::Opcode::BUFFER_ATOMIC_SUB_X2:
+			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicISub64);
 		case Decoder::Opcode::BUFFER_ATOMIC_SMIN:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicSMin32);
+		case Decoder::Opcode::BUFFER_ATOMIC_SMIN_X2:
+			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicSMin64);
 		case Decoder::Opcode::BUFFER_ATOMIC_UMIN:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicUMin32);
 		case Decoder::Opcode::BUFFER_ATOMIC_UMIN_X2:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicUMin64);
 		case Decoder::Opcode::BUFFER_ATOMIC_SMAX:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicSMax32);
+		case Decoder::Opcode::BUFFER_ATOMIC_SMAX_X2:
+			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicSMax64);
 		case Decoder::Opcode::BUFFER_ATOMIC_UMAX:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicUMax32);
+		case Decoder::Opcode::BUFFER_ATOMIC_UMAX_X2:
+			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicUMax64);
 		case Decoder::Opcode::BUFFER_ATOMIC_AND:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicAnd32);
 		case Decoder::Opcode::BUFFER_ATOMIC_AND_X2:
@@ -1049,6 +1102,8 @@ void Translator::EmitMemory(const Decoder::Instruction& inst) {
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicOr64);
 		case Decoder::Opcode::BUFFER_ATOMIC_XOR:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicXor32);
+		case Decoder::Opcode::BUFFER_ATOMIC_XOR_X2:
+			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicXor64);
 		case Decoder::Opcode::BUFFER_ATOMIC_FMIN:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicFMin32);
 		case Decoder::Opcode::BUFFER_ATOMIC_FMAX:
@@ -1164,6 +1219,51 @@ void Translator::EmitMemory(const Decoder::Instruction& inst) {
 		case Decoder::Opcode::FLAT_STORE_DWORDX2:
 		case Decoder::Opcode::FLAT_STORE_DWORDX3:
 		case Decoder::Opcode::FLAT_STORE_DWORDX4: return FLAT_STORE(inst);
+
+		case Decoder::Opcode::FLAT_ATOMIC_SWAP:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicSwap32);
+		case Decoder::Opcode::FLAT_ATOMIC_CMPSWAP:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicCmpSwap32);
+		case Decoder::Opcode::FLAT_ATOMIC_ADD:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicIAdd32);
+		case Decoder::Opcode::FLAT_ATOMIC_SUB:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicISub32);
+		case Decoder::Opcode::FLAT_ATOMIC_SMIN:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicSMin32);
+		case Decoder::Opcode::FLAT_ATOMIC_UMIN:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicUMin32);
+		case Decoder::Opcode::FLAT_ATOMIC_SMAX:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicSMax32);
+		case Decoder::Opcode::FLAT_ATOMIC_UMAX:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicUMax32);
+		case Decoder::Opcode::FLAT_ATOMIC_AND:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicAnd32);
+		case Decoder::Opcode::FLAT_ATOMIC_OR:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicOr32);
+		case Decoder::Opcode::FLAT_ATOMIC_XOR:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicXor32);
+		case Decoder::Opcode::FLAT_ATOMIC_SWAP_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicSwap64);
+		case Decoder::Opcode::FLAT_ATOMIC_CMPSWAP_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicCmpSwap64);
+		case Decoder::Opcode::FLAT_ATOMIC_ADD_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicIAdd64);
+		case Decoder::Opcode::FLAT_ATOMIC_SUB_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicISub64);
+		case Decoder::Opcode::FLAT_ATOMIC_SMIN_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicSMin64);
+		case Decoder::Opcode::FLAT_ATOMIC_UMIN_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicUMin64);
+		case Decoder::Opcode::FLAT_ATOMIC_SMAX_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicSMax64);
+		case Decoder::Opcode::FLAT_ATOMIC_UMAX_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicUMax64);
+		case Decoder::Opcode::FLAT_ATOMIC_AND_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicAnd64);
+		case Decoder::Opcode::FLAT_ATOMIC_OR_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicOr64);
+		case Decoder::Opcode::FLAT_ATOMIC_XOR_X2:
+			return FLAT_ATOMIC(inst, IR::ValueOpcode::AddressAtomicXor64);
 
 		case Decoder::Opcode::IMAGE_GET_RESINFO: return IMAGE_GET_RESINFO(inst);
 		case Decoder::Opcode::IMAGE_GET_LOD: return IMAGE_GET_LOD(inst);

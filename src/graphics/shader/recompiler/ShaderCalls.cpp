@@ -24,7 +24,6 @@ namespace Libs::Graphics::ShaderRecompiler {
 
 void PrepareCallTargets(ShaderSource& source, const CompileOptions& options) {
 	using namespace IR;
-	EXIT_NOT_IMPLEMENTED(options.stage != ShaderType::Compute);
 	source.wave_size = options.wave_size;
 	for (uint32_t i = 0; i < source.decoded.instructions.size(); ++i) {
 		if (source.decoded.instructions[i].opcode != Decoder::Opcode::S_SWAPPC_B64) continue;
@@ -78,9 +77,14 @@ void PrepareCallTargets(ShaderSource& source, const CompileOptions& options) {
 		auto& producer = entry->second;
 		if (inserted) {
 			Block translated;
+			const bool is_compute = (options.stage == ShaderType::Compute &&
+			                         options.input_info.compute != nullptr);
+			const bool flush_denorms =
+			    is_compute ? ((options.input_info.compute->float_mode & 0x10u) == 0u) : true;
+			const bool graphics_compute =
+			    is_compute ? !options.input_info.compute->async_compute : false;
 			Frontend::Translator translator(query, &translated, 1u, Frontend::NoLaneSpills,
-			    (options.input_info.compute->float_mode & 0x10u) == 0u,
-			    !options.input_info.compute->async_compute);
+			                                flush_denorms, graphics_compute);
 			translator.TranslateInstruction(source.decoded.instructions[index]);
 			for (const auto& inst: translated) {
 				uint32_t destination = UINT32_MAX;

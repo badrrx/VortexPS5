@@ -5,6 +5,8 @@
 #include "common/common.h"
 #include "common/stringUtils.h"
 
+#include <deque>
+#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -54,7 +56,8 @@ public:
 	static std::string GenerateName(const SymbolResolve& s);
 
 private:
-	std::vector<SymbolRecord>               m_symbols;
+	mutable std::shared_mutex               m_mutex;
+	std::deque<SymbolRecord>                m_symbols;
 	std::unordered_map<std::string, size_t> m_map;
 };
 

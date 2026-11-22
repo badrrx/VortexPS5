@@ -93,7 +93,11 @@ void DumpPm4PacketStream(Common::File* file, const uint32_t* cmd_buffer, uint32_
 	auto* cmd = cmd_buffer + start_dw;
 	auto  dw  = num_dw;
 	while (dw != 0) {
-		EXIT_NOT_IMPLEMENTED(dw > num_dw);
+		if (dw > num_dw) {
+			file->Printf("      | [warning] PM4 stream underflow (dw=%u > num_dw=%u); stopping dump\n",
+			             dw, num_dw);
+			break;
+		}
 
 		auto cmd_id = *cmd++;
 
@@ -102,8 +106,11 @@ void DumpPm4PacketStream(Common::File* file, const uint32_t* cmd_buffer, uint32_
 		uint32_t len = 0;
 
 		const auto packet_type = static_cast<PacketType>(cmd_id >> 30u);
-		EXIT_NOT_IMPLEMENTED(dw < 2 && packet_type != PacketType::Type2 &&
-		                     PacketSizeDw(cmd_id) != 1u);
+		if (dw < 2 && packet_type != PacketType::Type2 && PacketSizeDw(cmd_id) != 1u) {
+			file->Printf("[warning] truncated PM4 packet header at 0x%05" PRIx32 " (remaining=%u)\n",
+			             start_dw, dw);
+			break;
+		}
 
 		switch (packet_type) {
 			case PacketType::Type3: {
@@ -112,7 +119,12 @@ void DumpPm4PacketStream(Common::File* file, const uint32_t* cmd_buffer, uint32_
 				const auto    r     = KYTY_PM4_R(cmd_id);
 				len                 = PacketSizeDw(cmd_id) - 1u;
 
-				EXIT_NOT_IMPLEMENTED(len >= dw);
+				if (len >= dw) {
+					file->Printf("[warning] truncated Type3 PM4 packet %s (OP:0x%02" PRIx8
+					             ", len=%u >= remaining=%u)\n",
+					             g_opcode_names[op], op, len, dw);
+					return;
+				}
 
 				file->Printf("%s %s(OP:0x%02" PRIx8 ") SH:%s CNT:%u\n", g_opcode_names[op],
 				             (op == IT_NOP ? g_register_names[r] : ""), op, sh_gx ? "GX" : "CX",

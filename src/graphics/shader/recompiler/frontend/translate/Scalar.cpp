@@ -18,13 +18,70 @@ void Translator::EmitScalar(const Decoder::Instruction& inst) {
 		case O::S_CSELECT_B32: S_CSELECT_B32(inst); return;
 		case O::S_CSELECT_B64: ScalarSelect64(inst, inst.src1); return;
 		case O::S_CMOV_B64: ScalarSelect64(inst, inst.dst); return;
-		case O::S_GETREG_B32:
-			if (!graphics_compute || (inst.src0.value != 0x1818u && inst.src0.value != 0x0a18u))
-				EXIT("unsupported S_GETREG_B32 at pc 0x%08x: selector=0x%04x graphics_compute=%u",
-				     inst.pc, inst.src0.value, static_cast<unsigned>(graphics_compute));
-			// HW_ID2 identifies graphics compute as QUEUE=6, ME=0.
-			WriteOperand(inst.dst, IR::Value(inst.src0.value == 0x1818u ? 6u : 0u));
+		case O::S_GETREG_B32: {
+			// RDNA 2 (GFX10.3) S_GETREG_B32 imm16 layout:
+			//   [5:0]   hwreg_id
+			//   [10:6]  bit offset (0..31)
+			//   [15:11] size - 1 (1..32 bits)
+			const uint32_t selector = inst.src0.value;
+			if (graphics_compute && (selector == 0x1818u || selector == 0x0a18u)) {
+				// HW_ID2 identifies graphics compute as QUEUE=6, ME=0.
+				WriteOperand(inst.dst, IR::Value(selector == 0x1818u ? 6u : 0u));
+				return;
+			}
+			const uint32_t hwreg_id = selector & 0x3fu;
+			const uint32_t offset   = (selector >> 6u) & 0x1fu;
+			const uint32_t size     = ((selector >> 11u) & 0x1fu) + 1u;
+			const uint32_t mask     = size >= 32u ? 0xffffffffu : ((1u << size) - 1u);
+
+			uint32_t reg_val = 0u;
+			switch (hwreg_id) {
+				case 1u: // HW_REG_MODE (default IEEE round-to-nearest, denorms enabled)
+					reg_val = 0x000000f0u;
+					break;
+				case 2u: // HW_REG_STATUS (EXECZ=0, VCCZ=0, VALID=1)
+					reg_val = 0x00000000u;
+					break;
+				case 3u: // HW_REG_TRAPSTS
+					reg_val = 0x00000000u;
+					break;
+				case 4u: // HW_REG_HW_ID1 (WAVE_ID=0, SIMD_ID=0, WGP_ID=0, SA_ID=0, SE_ID=0)
+					reg_val = 0x00000000u;
+					break;
+				case 5u: // HW_REG_GPR_ALLOC
+					reg_val = 0x00000000u;
+					break;
+				case 6u: // HW_REG_LDS_ALLOC
+					reg_val = 0x00000000u;
+					break;
+				case 7u: // HW_REG_IB_STS
+					reg_val = 0x00000000u;
+					break;
+				case 15u: // HW_REG_SHADER_CYCLES (low 20 bits of realtime clock)
+				{
+					const auto clock   = ir.Emit(IR::ValueOpcode::ReadRealtimeClock, {});
+					const auto low     = IR::U32(ir.Emit(IR::ValueOpcode::CompositeExtractU64,
+					                                     {clock, IR::Value(0u)}));
+					const auto shifted = offset == 0u
+					                         ? low
+					                         : ir.ShiftRightLogical(low, IR::U32(IR::Value(offset)));
+					WriteOperand(inst.dst, ir.BitwiseAnd(shifted, IR::U32(IR::Value(mask))));
+					return;
+				}
+				case 23u: // HW_REG_HW_ID2 (GFX10.3: QUEUE_ID[3:0]=6 for graphics compute, ME_ID[9:8]=0)
+				case 24u: // HW_REG_HW_ID2 (Prospero alias)
+					reg_val = graphics_compute ? 6u : 0u;
+					break;
+				default:
+					// Safe fallback: return 0 for unrecognized hardware status/debug registers
+					// rather than aborting shader compilation.
+					reg_val = 0u;
+					break;
+			}
+			const uint32_t extracted = (reg_val >> offset) & mask;
+			WriteOperand(inst.dst, IR::Value(extracted));
 			return;
+		}
 		case O::S_SETREG_B32: EmitControlNop(); return;
 		case O::S_WAITCNT_VSCNT: S_WAITCNT_VSCNT(inst); return;
 		case O::S_WAITCNT: return;

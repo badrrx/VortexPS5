@@ -419,14 +419,21 @@ void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::Expor
 				const auto pointer = state.program.stage == ShaderType::Mesh
 				                         ? MeshOutputPointer(state, IR::StageOutputKind::Layer)
 				                         : state.layer_variable;
-				state.builder.AddFunction(spv::OpStore, pointer, layer);
+				if (pointer != 0) {
+					state.builder.AddFunction(spv::OpStore, pointer, layer);
+				}
 			}
 			if (output.viewport) {
 				// GFX10 MISC.z packs the viewport index in bits 16..19 alongside the layer.
 				const auto viewport = state.builder.AllocateId();
 				state.builder.AddFunction(spv::OpBitFieldUExtract, TypeU32(state), viewport, raw,
 				                          ConstantU32(state, 16), ConstantU32(state, 4));
-				state.builder.AddFunction(spv::OpStore, state.viewport_index_variable, viewport);
+				const auto pointer = state.program.stage == ShaderType::Mesh
+				                         ? MeshOutputPointer(state, IR::StageOutputKind::ViewportIndex)
+				                         : state.viewport_index_variable;
+				if (pointer != 0) {
+					state.builder.AddFunction(spv::OpStore, pointer, viewport);
+				}
 			}
 			continue;
 		}
@@ -439,12 +446,19 @@ void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::Expor
 		const auto f32 = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpBitcast, TypeF32(state), f32, raw);
 		if (output.point_size) {
-			state.builder.AddFunction(spv::OpStore, state.point_size_variable, f32);
+			const auto pointer = state.program.stage == ShaderType::Mesh
+			                         ? MeshOutputPointer(state, IR::StageOutputKind::PointSize)
+			                         : state.point_size_variable;
+			if (pointer != 0) {
+				state.builder.AddFunction(spv::OpStore, pointer, f32);
+			}
 			continue;
 		}
 		auto StoreDistance = [&](IR::StageOutputKind kind, uint32_t index) {
 			if (index != UINT32_MAX) {
-				state.builder.AddFunction(spv::OpStore, DistancePointer(state, kind, index), f32);
+				if (const auto pointer = DistancePointer(state, kind, index); pointer != 0) {
+					state.builder.AddFunction(spv::OpStore, pointer, f32);
+				}
 			}
 		};
 		StoreDistance(IR::StageOutputKind::ClipDistance, output.clip_distance);
@@ -646,8 +660,9 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 			const auto kind = exp.kind == IR::ExportTargetKind::Position
 			                      ? IR::StageOutputKind::Position
 			                      : IR::StageOutputKind::Parameter;
-			state.builder.AddFunction(spv::OpStore, MeshOutputPointer(state, kind, exp.index),
-			                          value);
+			if (const auto pointer = MeshOutputPointer(state, kind, exp.index); pointer != 0) {
+				state.builder.AddFunction(spv::OpStore, pointer, value);
+			}
 		} else if (exp.kind == IR::ExportTargetKind::Position) {
 			if (state.invalid_position_clip_distance != UINT32_MAX) {
 				const auto zero = state.builder.Constant(spv::OpConstantNull, TypeF32Vector(state, 4));

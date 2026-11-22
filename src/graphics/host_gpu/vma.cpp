@@ -115,6 +115,52 @@ uint32_t GraphicContext::GetHeapUsage(std::span<HeapUsage, VK_MAX_MEMORY_HEAPS> 
 	return count;
 }
 
+MemoryPressureSnapshot ClassifyMemoryPressure(std::span<const GraphicContext::HeapUsage> heaps,
+                                              bool discrete_gpu) noexcept {
+	constexpr double kElevatedWatermark = 0.75;
+	constexpr double kCriticalWatermark = 0.88;
+
+	MemoryPressureSnapshot snap {};
+	for (const auto& heap: heaps) {
+		if (discrete_gpu && !heap.device_local) {
+			continue;
+		}
+		snap.total_usage += heap.usage;
+		snap.total_budget += heap.budget;
+		if (heap.budget > 0) {
+			const double ratio =
+			    static_cast<double>(heap.usage) / static_cast<double>(heap.budget);
+			if (ratio > snap.peak_ratio) {
+				snap.peak_ratio = ratio;
+			}
+		}
+	}
+	if (snap.peak_ratio > kCriticalWatermark) {
+		snap.tier = MemoryPressureTier::Critical;
+	} else if (snap.peak_ratio >= kElevatedWatermark) {
+		snap.tier = MemoryPressureTier::Elevated;
+	} else {
+		snap.tier = MemoryPressureTier::Normal;
+	}
+	return snap;
+}
+
+MemoryPressureSnapshot GraphicContext::EvaluateMemoryPressure() const {
+	if (!CanReportMemoryUsage() || allocator == nullptr) {
+		m_last_pressure_tier.store(static_cast<uint8_t>(MemoryPressureTier::Normal),
+		                           std::memory_order_relaxed);
+		return {};
+	}
+	std::array<HeapUsage, VK_MAX_MEMORY_HEAPS> heaps {};
+	const uint32_t                             count = GetHeapUsage(heaps);
+	const bool                                 discrete =
+	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu;
+	const auto snap = ClassifyMemoryPressure(std::span<const HeapUsage>(heaps.data(), count),
+	                                         discrete);
+	m_last_pressure_tier.store(static_cast<uint8_t>(snap.tier), std::memory_order_relaxed);
+	return snap;
+}
+
 uint64_t GraphicContext::GetTotalMemoryBudget() const {
 	if (allocator == nullptr) {
 		return 0;

@@ -726,7 +726,11 @@ int KYTY_SYSV_ABI SaveDataMount3(const SaveDataMount3* mount, SaveDataMountResul
 	}
 
 	if (!create && !create2 && !open) {
-		EXIT("unknown mount mode: %u", mount->mount_mode);
+		if (mount->mount_mode == 0) {
+			return SAVE_DATA_ERROR_PARAMETER;
+		}
+		LOGF("\t warning: normalizing extended SaveData mount_mode=0x%" PRIx32 " to RDWR open\n",
+		     mount->mount_mode);
 	}
 
 	const bool exists = Common::File::IsDirectoryExisting(mount_dir);
@@ -1379,13 +1383,23 @@ int KYTY_SYSV_ABI SaveDataGetMountInfo(const SaveDataMountPoint* mount_point,
 
 int KYTY_SYSV_ABI SaveDataSaveIcon(const SaveDataMountPoint* mount_point,
                                    const SaveDataIcon*       icon) {
-	EXIT_NOT_IMPLEMENTED(mount_point == nullptr);
-	EXIT_NOT_IMPLEMENTED(icon == nullptr);
+	if (mount_point == nullptr || icon == nullptr) {
+		return SAVE_DATA_ERROR_PARAMETER;
+	}
 
 	LOGF("\t buf       = %016" PRIx64 "\n"
 	     "\t buf_size  = %" PRIu64 "\n"
 	     "\t data_size = %" PRIu64 "\n",
 	     reinterpret_cast<uint64_t>(icon->buf), icon->buf_size, icon->data_size);
+
+	if (icon->buf != nullptr && icon->data_size > 0 && icon->data_size <= icon->buf_size) {
+		Common::LockGuard lock(g_mount_mutex);
+		const int slot = g_mount_slots.Find(mount_point->data);
+		if (slot >= 0) {
+			const auto& dir = g_mount_slots.Directory(static_cast<size_t>(slot));
+			(void)write_save_file(dir / "sce_sys" / "icon0.png", icon->buf, icon->data_size);
+		}
+	}
 
 	return OK;
 }

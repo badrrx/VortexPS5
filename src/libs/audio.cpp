@@ -870,7 +870,9 @@ int KYTY_SYSV_ABI AudioOutOpen(int user_id, int type, int index, uint32_t len, u
 	if (freq == 0) {
 		return AUDIO_OUT_ERROR_INVALID_SAMPLE_FREQ;
 	}
-	EXIT_NOT_IMPLEMENTED(index != 0);
+	if (index != 0) {
+		return AUDIO_OUT_ERROR_INVALID_PARAM;
+	}
 
 	Audio::Format format       = Audio::Format::Unknown;
 	const auto    format_param = param & AUDIO_OUT_PARAM_FORMAT_MASK;
@@ -889,7 +891,9 @@ int KYTY_SYSV_ABI AudioOutOpen(int user_id, int type, int index, uint32_t len, u
 
 	LOGF("\t param   = %u (format=%u, %s)\n", param, format_param, magic_enum::enum_name(format));
 
-	EXIT_NOT_IMPLEMENTED(format == Audio::Format::Unknown);
+	if (format == Audio::Format::Unknown) {
+		return AUDIO_OUT_ERROR_INVALID_FORMAT;
+	}
 
 	EXIT_IF(g_audio == nullptr);
 
@@ -922,7 +926,9 @@ int KYTY_SYSV_ABI AudioOutGetPortState(int handle, AudioOutPortState* state) {
 		return AUDIO_OUT_ERROR_INVALID_PORT;
 	}
 
-	EXIT_NOT_IMPLEMENTED(state == nullptr);
+	if (state == nullptr) {
+		return AUDIO_OUT_ERROR_INVALID_POINTER;
+	}
 
 	state->reroute_counter = 0;
 	state->volume          = 127;
@@ -948,7 +954,13 @@ int KYTY_SYSV_ABI AudioOutGetPortState(int handle, AudioOutPortState* state) {
 			state->output  = 0x80;
 			state->channel = 0;
 			break;
-		default: EXIT("unknown port type: %d\n", type);
+		default:
+			LOGF_COLOR(Log::Color::Yellow,
+			           "\t AudioOutGetPortState: unknown port type %d — defaulting to main\n",
+			           type);
+			state->output  = 1;
+			state->channel = (channels_num > 2 ? 2 : channels_num);
+			break;
 	}
 
 	LOGF("\t output  = %" PRIu16 "\n"
@@ -979,7 +991,9 @@ int KYTY_SYSV_ABI AudioOutSetVolume(int handle, uint32_t flag, int* vol) {
 	     handle, flag);
 
 	EXIT_IF(g_audio == nullptr);
-	EXIT_NOT_IMPLEMENTED(vol == nullptr);
+	if (vol == nullptr) {
+		return AUDIO_OUT_ERROR_INVALID_POINTER;
+	}
 
 	if (!g_audio->AudioOutSetVolume(Audio::Id(handle), flag, vol)) {
 		return AUDIO_OUT_ERROR_INVALID_PORT;
@@ -991,7 +1005,9 @@ int KYTY_SYSV_ABI AudioOutSetVolume(int handle, uint32_t flag, int* vol) {
 int KYTY_SYSV_ABI AudioOutOutputs(AudioOutOutputParam* param, uint32_t num) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(param == nullptr);
+	if (param == nullptr) {
+		return AUDIO_OUT_ERROR_INVALID_POINTER;
+	}
 	if (num == 0 || num > Audio::OUT_PORTS_MAX) {
 		return AUDIO_OUT_ERROR_INVALID_SIZE;
 	}

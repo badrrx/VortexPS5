@@ -57,6 +57,10 @@ struct DynamicState {
 		bool blend_constants       : 1;
 		bool line_width            : 1;
 		bool feedback_loop_aspects : 1;
+
+		bool polygon_mode       : 1;
+		bool depth_clip_enable  : 1;
+		bool color_blend_states : 1;
 	} dirty_state {};
 
 	std::array<vk::Viewport, 16> viewports {};
@@ -93,6 +97,13 @@ struct DynamicState {
 	std::array<float, 4> blend_constants {};
 	float                line_width {};
 	vk::ImageAspectFlags feedback_loop_aspects {};
+
+	vk::PolygonMode                             polygon_mode {vk::PolygonMode::eFill};
+	bool                                        depth_clip_enable {true};
+	uint32_t                                    color_attachment_count {0};
+	std::array<vk::Bool32, 8>                   color_blend_enables {};
+	std::array<vk::ColorBlendEquationEXT, 8>    color_blend_equations {};
+	std::array<vk::ColorComponentFlags, 8>      color_write_masks {};
 
 	/// Commits the dynamic state to the provided command buffer.
 	void Commit(const GraphicContext& graphics, vk::CommandBuffer cmdbuf);
@@ -256,6 +267,30 @@ struct DynamicState {
 			feedback_loop_aspects             = aspects;
 			dirty_state.feedback_loop_aspects = true;
 		}
+	}
+
+	void SetPolygonMode(vk::PolygonMode mode) {
+		if (polygon_mode != mode) {
+			polygon_mode             = mode;
+			dirty_state.polygon_mode = true;
+		}
+	}
+
+	void SetDepthClipEnable(bool enable) {
+		if (depth_clip_enable != enable) {
+			depth_clip_enable             = enable;
+			dirty_state.depth_clip_enable = true;
+		}
+	}
+
+	void SetColorBlendStates(uint32_t count, const std::array<vk::Bool32, 8>& enables,
+	                         const std::array<vk::ColorBlendEquationEXT, 8>& equations,
+	                         const std::array<vk::ColorComponentFlags, 8>&   masks) {
+		color_attachment_count         = std::min<uint32_t>(count, 8u);
+		color_blend_enables            = enables;
+		color_blend_equations          = equations;
+		color_write_masks              = masks;
+		dirty_state.color_blend_states = true;
 	}
 };
 

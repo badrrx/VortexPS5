@@ -1620,8 +1620,12 @@ static int KYTY_SYSV_ABI KernelGetModuleInfoFromAddr(uint64_t addr, int n, Modul
 	     "\tn = %d\n",
 	     addr, n);
 
-	EXIT_NOT_IMPLEMENTED(n != 2);
-	EXIT_NOT_IMPLEMENTED(r == nullptr);
+	if (r == nullptr) {
+		return KERNEL_ERROR_EFAULT;
+	}
+	if (n != 2) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
 
@@ -1673,7 +1677,9 @@ static KYTY_SYSV_ABI NewReplace* KernelGetSanitizerNewReplaceExternal() {
 static KYTY_SYSV_ABI int elf_phdr_match_addr(ModuleInfo* m, uint64_t dtor_vaddr) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(m == nullptr);
+	if (m == nullptr) {
+		return 0;
+	}
 
 	auto* rt     = Common::Singleton<Loader::RuntimeLinker>::Instance();
 	auto* p      = rt->FindProgramByAddr(dtor_vaddr);
@@ -2179,10 +2185,15 @@ int KYTY_SYSV_ABI KernelSyncOnAddressWake(volatile void* address, int32_t count)
 
 int KYTY_SYSV_ABI UmtxOp(volatile void* address, int operation, uint64_t value,
                            void* uaddr, const void* timeout) {
-	constexpr int UMTX_OP_WAIT = 2;
-	constexpr int UMTX_OP_WAKE = 3;
+	constexpr int UMTX_OP_WAIT              = 2;
+	constexpr int UMTX_OP_WAKE              = 3;
+	constexpr int UMTX_OP_WAIT_UINT         = 11;
+	constexpr int UMTX_OP_WAIT_UINT_PRIVATE = 15;
+	constexpr int UMTX_OP_WAKE_PRIVATE      = 16;
 
-	EXIT_NOT_IMPLEMENTED(uaddr != nullptr);
+	if (uaddr != nullptr) {
+		LOGF_COLOR(Log::Color::Yellow, "UmtxOp: ignoring non-null uaddr for op=%d\n", operation);
+	}
 
 	switch (operation) {
 		case UMTX_OP_WAIT:
@@ -2204,9 +2215,36 @@ int KYTY_SYSV_ABI UmtxOp(volatile void* address, int operation, uint64_t value,
 			return POSIX_CALL(LibKernel::SyncOnAddress::Wait64(
 			    static_cast<volatile uint64_t*>(address), value, nullptr,
 			    LibKernel::KernelDispatchPendingSignalForCurrentThread));
+		case UMTX_OP_WAIT_UINT:
+		case UMTX_OP_WAIT_UINT_PRIVATE: {
+			if (timeout != nullptr) {
+				LibKernel::KernelTimespec duration {};
+				std::memcpy(&duration, timeout, sizeof(duration));
+				if (duration.tv_sec < 0 || duration.tv_nsec < 0 || duration.tv_nsec >= 1000000000) {
+					*GetErrorAddr() = POSIX_EINVAL;
+					return -1;
+				}
+				const uint64_t micros64 =
+				    static_cast<uint64_t>(duration.tv_sec) * 1000000ull +
+				    static_cast<uint64_t>(duration.tv_nsec) / 1000ull;
+				const uint32_t micros =
+				    micros64 > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(micros64);
+				return POSIX_CALL(LibKernel::SyncOnAddress::Wait32(
+				    static_cast<volatile uint32_t*>(address), static_cast<uint32_t>(value), &micros,
+				    LibKernel::KernelDispatchPendingSignalForCurrentThread));
+			}
+			return POSIX_CALL(LibKernel::SyncOnAddress::Wait32(
+			    static_cast<volatile uint32_t*>(address), static_cast<uint32_t>(value), nullptr,
+			    LibKernel::KernelDispatchPendingSignalForCurrentThread));
+		}
 		case UMTX_OP_WAKE:
+		case UMTX_OP_WAKE_PRIVATE:
 			return POSIX_CALL(LibKernel::SyncOnAddress::Wake(address, static_cast<int32_t>(value)));
-		default: EXIT("Unsupported _umtx_op operation: %d\n", operation);
+		default:
+			LOGF_COLOR(Log::Color::Yellow, "UmtxOp: unsupported operation %d — returning EINVAL\n",
+			           operation);
+			*GetErrorAddr() = POSIX_EINVAL;
+			return -1;
 	}
 }
 

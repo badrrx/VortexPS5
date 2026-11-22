@@ -58,6 +58,10 @@ namespace LibAmpr {
 LIB_DEFINE(InitAmpr_1);
 } // namespace LibAmpr
 
+namespace LibFios2 {
+LIB_DEFINE(InitFios2_1);
+} // namespace LibFios2
+
 namespace Coredump {
 LIB_DEFINE(InitCoredump_1);
 } // namespace Coredump
@@ -116,6 +120,7 @@ void InitAll(Loader::SymbolDatabase* s) {
 	InitAudio_1(s);
 	InitConvertKeycode_1(s);
 	LibAmpr::InitAmpr_1(s);
+	LibFios2::InitFios2_1(s);
 	InitAppContent_1(s);
 	Coredump::InitCoredump_1(s);
 	LibContentDelete::InitContentDelete_1(s);

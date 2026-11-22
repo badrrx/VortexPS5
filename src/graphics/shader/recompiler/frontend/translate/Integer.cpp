@@ -287,6 +287,34 @@ void Translator::V_MAD_U64_U32(const Decoder::Instruction& inst) {
 	}
 }
 
+void Translator::V_MAD_I64_I32(const Decoder::Instruction& inst) {
+	const auto lhs = ReadU32(inst.src0);
+	const auto rhs = ReadU32(inst.src1);
+	const auto product = ir.ConstructU64(
+	    ir.IMul(lhs, rhs), IR::U32(ir.Emit(IR::ValueOpcode::SMulHi, {lhs, rhs})));
+	const auto result = ir.Emit(IR::ValueOpcode::IAdd64, {product, ReadU64(inst.src2)});
+	WriteOperand(DestinationOperand(inst), result);
+	if (inst.dst2.kind != Decoder::OperandKind::Null &&
+	    inst.dst2.kind != Decoder::OperandKind::Unknown) {
+		const auto carry = IR::U1(ir.Emit(IR::ValueOpcode::ULessThan64, {result, product}));
+		WriteVectorMask(inst.dst2, carry);
+	}
+}
+
+void Translator::V_DOT4_I8(const Decoder::Instruction& inst, bool is_signed) {
+	const auto lhs        = ReadU32(inst.src0);
+	const auto rhs        = ReadU32(inst.src1);
+	auto       acc        = ReadU32(inst.src2);
+	const auto extract_op = is_signed ? IR::ValueOpcode::BitFieldSExtract
+	                                  : IR::ValueOpcode::BitFieldUExtract;
+	for (uint32_t offset = 0; offset < 32u; offset += 8u) {
+		const auto a = IR::U32(ir.Emit(extract_op, {lhs, IR::Value(offset), IR::Value(8u)}));
+		const auto b = IR::U32(ir.Emit(extract_op, {rhs, IR::Value(offset), IR::Value(8u)}));
+		acc          = ir.IAdd(acc, ir.IMul(a, b));
+	}
+	WriteOperand(DestinationOperand(inst), acc);
+}
+
 void Translator::V_SAD_U32(const Decoder::Instruction& inst) {
 	const auto lhs    = ReadU32(inst.src0);
 	const auto rhs    = ReadU32(inst.src1);
@@ -314,6 +342,83 @@ void Translator::V_MSAD_U8(const Decoder::Instruction& inst) {
 		result = ir.IAdd(result, masked);
 	}
 	WriteOperand(DestinationOperand(inst), result);
+}
+
+void Translator::V_QSAD_PK_U16_U8(const Decoder::Instruction& inst, bool masked) {
+	// RDNA 2 quad-SAD (4 sliding windows over 8 bytes in src0[63:0] vs 4 ref bytes in src1[31:0]):
+	//   dst[63:0] = packed 4x uint16(clamp(acc[w] + sum_k (masked && ref[k]==0 ? 0 : |s0[w+k]-ref[k]|)))
+	const auto src0 = ReadU32Pair(inst.src0);
+	const auto ref  = ReadU32(inst.src1);
+	const auto acc  = ReadU32Pair(inst.src2);
+
+	const auto extract_src0_byte = [&](uint32_t byte_idx) {
+		const auto word   = byte_idx < 4u ? src0[0] : src0[1];
+		const auto offset = (byte_idx & 3u) * 8u;
+		return IR::U32(ir.Emit(IR::ValueOpcode::BitFieldUExtract, {word, IR::Value(offset), IR::Value(8u)}));
+	};
+	const auto extract_ref_byte = [&](uint32_t byte_idx) {
+		return IR::U32(ir.Emit(IR::ValueOpcode::BitFieldUExtract, {ref, IR::Value(byte_idx * 8u), IR::Value(8u)}));
+	};
+
+	std::array<IR::U32, 4> lanes;
+	for (uint32_t w = 0; w < 4u; ++w) {
+		const auto acc_word = w < 2u ? acc[0] : acc[1];
+		const auto acc_off  = (w & 1u) * 16u;
+		auto sum = IR::U32(ir.Emit(IR::ValueOpcode::BitFieldUExtract, {acc_word, IR::Value(acc_off), IR::Value(16u)}));
+		for (uint32_t k = 0; k < 4u; ++k) {
+			const auto s_byte = extract_src0_byte(w + k);
+			const auto r_byte = extract_ref_byte(k);
+			const auto diff   = IR::U32(ir.Emit(IR::ValueOpcode::IAbs32, {ir.ISub(s_byte, r_byte)}));
+			const auto term   = masked ? ir.Select(ir.INotEqual(r_byte, IR::U32(IR::Value(0u))), diff,
+			                                       IR::U32(IR::Value(0u)))
+			                           : diff;
+			sum = ir.IAdd(sum, term);
+		}
+		lanes[w] = inst.dst.clamp ? IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {sum, IR::Value(0xffffu)}))
+		                          : ir.BitwiseAnd(sum, IR::U32(IR::Value(0xffffu)));
+	}
+
+	const auto out_lo = PackU16Lanes(lanes[0], lanes[1]);
+	const auto out_hi = PackU16Lanes(lanes[2], lanes[3]);
+	WriteU32Pair(DestinationOperand(inst), {out_lo, out_hi});
+}
+
+void Translator::V_MQSAD_U32_U8(const Decoder::Instruction& inst) {
+	// RDNA 2 128-bit masked quad-SAD (4x uint32 outputs in dst[0..3], 4x uint32 accumulators in src2[0..3]):
+	const auto src0 = ReadU32Pair(inst.src0);
+	const auto ref  = ReadU32(inst.src1);
+
+	const auto extract_src0_byte = [&](uint32_t byte_idx) {
+		const auto word   = byte_idx < 4u ? src0[0] : src0[1];
+		const auto offset = (byte_idx & 3u) * 8u;
+		return IR::U32(ir.Emit(IR::ValueOpcode::BitFieldUExtract, {word, IR::Value(offset), IR::Value(8u)}));
+	};
+	const auto extract_ref_byte = [&](uint32_t byte_idx) {
+		return IR::U32(ir.Emit(IR::ValueOpcode::BitFieldUExtract, {ref, IR::Value(byte_idx * 8u), IR::Value(8u)}));
+	};
+
+	const auto base_dst  = DestinationOperand(inst);
+	const auto base_src2 = inst.src2;
+	for (uint32_t w = 0; w < 4u; ++w) {
+		auto acc_op = base_src2;
+		if (acc_op.kind == Decoder::OperandKind::Vgpr || acc_op.kind == Decoder::OperandKind::Sgpr) {
+			acc_op.reg += w;
+		}
+		auto sum = ReadU32(acc_op);
+		for (uint32_t k = 0; k < 4u; ++k) {
+			const auto s_byte = extract_src0_byte(w + k);
+			const auto r_byte = extract_ref_byte(k);
+			const auto diff   = IR::U32(ir.Emit(IR::ValueOpcode::IAbs32, {ir.ISub(s_byte, r_byte)}));
+			const auto term   = ir.Select(ir.INotEqual(r_byte, IR::U32(IR::Value(0u))), diff,
+			                              IR::U32(IR::Value(0u)));
+			sum = ir.IAdd(sum, term);
+		}
+		auto dst_op = base_dst;
+		if (dst_op.kind == Decoder::OperandKind::Vgpr) {
+			dst_op.reg += w;
+		}
+		WriteOperand(dst_op, sum);
+	}
 }
 
 void Translator::S_BITSET_B32(const Decoder::Instruction& inst, bool set) {

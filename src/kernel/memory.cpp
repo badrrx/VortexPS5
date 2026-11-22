@@ -1,6 +1,7 @@
 #include "kernel/memory.h"
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -77,6 +78,50 @@ static Graphics::RenderContext* g_gpu_resources        = nullptr;
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 static void (*g_test_gpu_range)(bool, uint64_t, size_t) = nullptr;
 #endif
+
+uint64_t QueryHostPhysicalMemoryBytes() noexcept {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	MEMORYSTATUSEX status {};
+	status.dwLength = sizeof(status);
+	if (GlobalMemoryStatusEx(&status) != 0 && status.ullTotalPhys > 0) {
+		return static_cast<uint64_t>(status.ullTotalPhys);
+	}
+	return 16ull * 1024ull * 1024ull * 1024ull;
+#else
+	const long pages     = sysconf(_SC_PHYS_PAGES);
+	const long page_size = sysconf(_SC_PAGE_SIZE);
+	if (pages > 0 && page_size > 0) {
+		return static_cast<uint64_t>(pages) * static_cast<uint64_t>(page_size);
+	}
+	return 16ull * 1024ull * 1024ull * 1024ull;
+#endif
+}
+
+uint64_t ComputeAdaptiveGuestMemoryBudget(uint64_t host_ram_bytes, bool trinity_mode,
+                                          uint32_t override_mb) noexcept {
+	constexpr uint64_t kMiB           = 1024ull * 1024ull;
+	constexpr uint64_t kGiB           = 1024ull * kMiB;
+	constexpr uint64_t kMinBudget     = 4096ull * kMiB;
+	constexpr uint64_t kBudget16GB    = 8192ull * kMiB;  // 8.0 GiB safe profile for <=16 GiB RAM/iGPU hosts
+	constexpr uint64_t kBudget24GB    = 10240ull * kMiB; // 10.0 GiB profile for 17-24 GiB hosts
+	constexpr uint64_t kTrinityBonus  = 1216ull * kMiB;
+	constexpr uint64_t kMaxBudget     = GUEST_MEMORY_BUDGET + kTrinityBonus;
+
+	uint64_t budget = GUEST_MEMORY_BUDGET + (trinity_mode ? kTrinityBonus : 0);
+	if (override_mb > 0) {
+		budget = std::clamp(static_cast<uint64_t>(override_mb) * kMiB, kMinBudget, kMaxBudget);
+	} else if (host_ram_bytes > 0 && host_ram_bytes <= 16ull * kGiB + 512ull * kMiB) {
+		budget = kBudget16GB;
+	} else if (host_ram_bytes > 0 && host_ram_bytes <= 24ull * kGiB + 512ull * kMiB) {
+		budget = kBudget24GB;
+	}
+	// Align down to 2 MiB page-table granularity.
+	return (budget / PAGE_TABLE_GRANULARITY) * PAGE_TABLE_GRANULARITY;
+}
+
+uint64_t GetActiveGuestMemoryBudgetBytes() noexcept {
+	return g_guest_memory_size + RESERVED_CACHE_SIZE;
+}
 
 static Graphics::RenderContext& GetGpuResources() {
 	EXIT_IF(g_gpu_resources == nullptr);
@@ -849,7 +894,7 @@ void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
 }
 
 void InvalidateMemory(uint64_t vaddr, uint64_t size) {
-	if (size == 0) {
+	if (size == 0 || g_gpu_resources == nullptr) {
 		return;
 	}
 	(void)GetGpuResources().InvalidateMemory(vaddr, size);
@@ -954,10 +999,13 @@ void Initialize() {
 	const auto table_overhead = g_cpu_table_memory + g_gpu_table_memory +
 	                            std::max(params.amm_table_memory, INCLUDED_TABLE_MEMORY) -
 	                            3 * INCLUDED_TABLE_MEMORY;
-	const auto memory_budget = GUEST_MEMORY_BUDGET +
-	                           (Loader::SystemContentIsTrinityMode() ? 1216ull * 1024ull * 1024ull : 0);
+	const auto host_ram_bytes = QueryHostPhysicalMemoryBytes();
+	const auto memory_budget  = ComputeAdaptiveGuestMemoryBudget(
+	    host_ram_bytes, Loader::SystemContentIsTrinityMode(), Config::GetGuestMemoryBudgetMb());
 	EXIT_IF(g_flexible_memory_size + table_overhead >= memory_budget - RESERVED_CACHE_SIZE);
 	g_guest_memory_size = memory_budget - RESERVED_CACHE_SIZE - table_overhead;
+	LOGF("\t host RAM = %" PRIu64 " MiB -> adaptive guest budget = %" PRIu64 " MiB\n",
+	     host_ram_bytes / (1024ull * 1024ull), memory_budget / (1024ull * 1024ull));
 	LOGF("\t flexible memory size = %" PRIu64 " MiB, direct memory size = %" PRIu64 " MiB\n",
 	     g_flexible_memory_size / (1024ull * 1024ull),
 	     (g_guest_memory_size - g_flexible_memory_size) / (1024ull * 1024ull));
@@ -1505,7 +1553,9 @@ static bool IsReservedSpan(uint64_t start, uint64_t size) {
 
 static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
                              const char* name) {
-	EXIT_NOT_IMPLEMENTED(addr_in_out == nullptr);
+	if (addr_in_out == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	constexpr size_t   PAGE_SIZE                = 0x4000;
 	constexpr size_t   MAXIMUM_NAME_SIZE        = 32;
@@ -1522,9 +1572,6 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 
 	if (len == 0 || (len & (PAGE_SIZE - 1)) != 0) {
 		return KERNEL_ERROR_EINVAL;
-	}
-	if (len > g_flexible_memory->Available()) {
-		return KERNEL_ERROR_ENOMEM;
 	}
 
 	if (name == nullptr) {
@@ -1545,10 +1592,15 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 	const uint64_t map_alignment =
 	    alignment_shift != 0 ? uint64_t {1} << alignment_shift : PAGE_SIZE;
 
-	VirtualMemory::Mode mode     = VirtualMemory::Mode::NoAccess;
+	VirtualMemory::Mode mode = VirtualMemory::Mode::NoAccess;
 
 	if (!DecodeMemoryProtection(prot, &mode)) {
-		EXIT("unknown prot: %d\n", prot);
+		LOGF_COLOR(Log::Color::Yellow, "\t MapFlexibleMemory: unknown prot = %d\n", prot);
+		return KERNEL_ERROR_EINVAL;
+	}
+
+	if (g_flexible_memory == nullptr || len > g_flexible_memory->Available()) {
+		return KERNEL_ERROR_ENOMEM;
 	}
 
 	auto     in_addr         = reinterpret_cast<uint64_t>(*addr_in_out);
@@ -2462,12 +2514,15 @@ int KYTY_SYSV_ABI KernelIsAddressSanitizerEnabled() {
 int KYTY_SYSV_ABI KernelQueryMemoryProtection(void* addr, void** start, void** end, int* prot) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(addr == nullptr);
+	if (addr == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	VirtualRanges::Range range {};
 	{
 		std::shared_lock state(g_memory_state_mutex);
-		if (!g_virtual_ranges->Query(reinterpret_cast<uint64_t>(addr), 0, &range)) {
+		if (g_virtual_ranges == nullptr ||
+		    !g_virtual_ranges->Query(reinterpret_cast<uint64_t>(addr), 0, &range)) {
 			return KERNEL_ERROR_EACCES;
 		}
 	}

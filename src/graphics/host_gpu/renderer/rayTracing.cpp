@@ -163,6 +163,21 @@ vk::AccelerationStructureGeometryKHR InstanceGeometry(vk::DeviceAddress instance
 
 } // namespace
 
+BlasBuildDecision EvaluateBlasBuildDecision(bool ready, bool built, bool whole, bool reshaped,
+                                            bool dynamic, bool geometry_known, bool applied_current,
+                                            bool guest_pages_dirty) {
+	if (!ready) {
+		return BlasBuildDecision::Skip;
+	}
+	if (!built || (whole && reshaped)) {
+		return BlasBuildDecision::Rebuild;
+	}
+	if ((dynamic && guest_pages_dirty) || (!geometry_known && applied_current)) {
+		return BlasBuildDecision::Update;
+	}
+	return BlasBuildDecision::Skip;
+}
+
 RayTracing::RayTracing(RenderContext& context)
     : m_graphics(context.GetGraphics()), m_scheduler(context.GetCommandScheduler()),
       m_buffer_cache(context.GetBufferCache()), m_context(context) {
@@ -473,10 +488,21 @@ vk::DeviceAddress RayTracing::Prepare(uint64_t tlas) {
 		const bool ready   = current && pair.count != 0 && pair.first >= blas.begin &&
 		                     pair.first - blas.begin + uint64_t {pair.count} <= blas.capacity &&
 		                     pair.first < (1u << 24);
-		const bool rebuild = ready && (!pair.built || (whole && blas.reshaped));
-		const bool update =
-		    ready && !rebuild &&
-		    (blas.dynamic || (!pair.geometry_known && m_applied >= pair.update_serial));
+		const uint64_t blas_bytes =
+		    std::max<uint64_t>(uint64_t {blas.end > blas.begin ? blas.end - blas.begin : 1u} * 64u,
+		                       0x4000u);
+		const bool guest_pages_dirty =
+		    !pair.built || m_buffer_cache.IsRegionGpuModified(blas.address, blas_bytes);
+		const auto decision = EvaluateBlasBuildDecision(
+		    ready, pair.built, whole, blas.reshaped, blas.dynamic, pair.geometry_known,
+		    m_applied >= pair.update_serial, guest_pages_dirty);
+		const bool rebuild = (decision == BlasBuildDecision::Rebuild);
+		const bool update  = (decision == BlasBuildDecision::Update);
+		if (rebuild || update) {
+			++m_blas_builds_issued;
+		} else if (ready && pair.built) {
+			++m_blas_builds_skipped;
+		}
 		if (rebuild && pair.structure.capacity < pair.count) {
 			Create(pair.structure, TriangleGeometry(0, pair.count),
 			       vk::AccelerationStructureTypeKHR::eBottomLevel, BlasFlags, pair.count);

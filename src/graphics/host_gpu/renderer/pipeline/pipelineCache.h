@@ -14,10 +14,12 @@
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -25,6 +27,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -188,6 +191,10 @@ public:
 	// Finishes the queued writes and stops the store thread, then writes the driver cache if it
 	// changed.
 	void Save();
+	// Drains completed async pipelines and flushes a dirty Vulkan driver cache on idle frames.
+	void OnFrameIdle();
+	// Immediately schedules an asynchronous Vulkan driver pipeline cache flush to disk.
+	void RequestFlushDriverCache();
 
 	struct Pipeline {
 		vk::PipelineLayout      pipeline_layout       = nullptr;
@@ -256,12 +263,38 @@ private:
 	vk::PipelineCache             m_driver_cache = nullptr;
 	std::filesystem::path         m_driver_cache_path;
 	std::chrono::steady_clock::time_point m_next_driver_cache_save;
+	std::chrono::steady_clock::time_point m_last_driver_cache_save;
 	bool                          m_driver_cache_dirty = false;
+	uint32_t                      m_dirty_pipeline_count = 0;
+	mutable std::atomic_bool      m_driver_cache_saving {false};
 	std::unordered_map<GraphicsPipelineKey, Pipeline, GraphicsPipelineKeyHash> m_graphics_pipelines;
 	std::unordered_map<uint64_t, Pipeline>                                     m_compute_pipelines;
 	std::unordered_map<uint64_t, ShaderTessellationInputInfo>                  m_tess_layouts;
+	// Async background graphics pipeline compiler pool (eliminates GPU-thread compile stutter).
+	struct AsyncCompileJob {
+		GraphicsPipelineKey                key;
+		std::array<const ShaderModule*, 4> stages {};
+	};
+	struct AsyncCompileResult {
+		GraphicsPipelineKey key;
+		Pipeline            pipeline;
+	};
+	Pipeline                                                        m_pending_pipeline_sentinel {};
+	std::mutex                                                      m_async_mutex;
+	std::condition_variable_any                                     m_async_cv;
+	std::queue<AsyncCompileJob>                                     m_async_queue;
+	std::unordered_set<GraphicsPipelineKey, GraphicsPipelineKeyHash> m_async_in_flight;
+	std::vector<AsyncCompileResult>                                 m_async_completed;
+	std::vector<std::jthread>                                       m_async_workers;
+	std::atomic<uint32_t>                                           m_async_active_workers {0};
 	// Records everything first created if a shader store is open, and writes the driver cache.
 	ShaderStoreWriter m_store;
+
+	void StartAsyncWorkers();
+	void StopAsyncWorkers();
+	void DrainCompletedAsyncPipelines();
+	bool EnqueueAsyncGraphicsPipeline(const GraphicsPipelineKey&                key,
+	                                  const std::array<const ShaderModule*, 4>& stages);
 
 	template <typename InputInfo>
 	const ShaderModule* GetProgram(const ShaderParams& params, InputInfo& input_info,
@@ -294,6 +327,12 @@ private:
 std::filesystem::path ShaderStorePath();
 // Host capabilities that change the emitted SPIR-V.
 ShaderRecompiler::Spirv::Profile SpirvProfile(const GraphicContext& graphics);
+// Semantic shader store header (schema version + SpirvProfile + shared memory limit).
+constexpr uint64_t SHADER_STORE_MAGIC          = 0x4B59545953533031ULL; // "KYTYSS01"
+constexpr uint32_t SHADER_STORE_SCHEMA_VERSION = 1u;
+std::vector<uint8_t> BuildShaderStoreHeader(uint32_t                                schema_version,
+                                            const ShaderRecompiler::Spirv::Profile& profile,
+                                            uint32_t max_compute_shared_mem);
 
 // Stages are indexed like GraphicsPipelineKey::stage_ids.
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
@@ -302,6 +341,51 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             vk::PipelineCache                          driver_cache);
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                             const ShaderModule& module, vk::PipelineCache driver_cache);
+
+namespace HW {
+struct ModeControl;
+} // namespace HW
+
+vk::PolygonMode ResolvePolygonMode(const HW::ModeControl& mode, bool cull_front, bool cull_back);
+
+// Canonicalizes EDS3-dynamic fields out of GraphicsPipelineKey to collapse monolithic permutations.
+void CanonicalizeGraphicsPipelineKey(GraphicsPipelineKey& key, bool eds3_polygon_mode,
+                                     bool eds3_depth_clip, bool eds3_blend_enable,
+                                     bool eds3_blend_eq, bool eds3_write_mask);
+void CanonicalizeGraphicsPipelineKey(GraphicsPipelineKey& key, const GraphicContext& graphics);
+
+// Persistent Vulkan VkPipelineCache disk container (atomic save + driver-UUID/checksum validation).
+bool SaveVkPipelineCacheBlob(const std::filesystem::path& path, uint32_t vendor_id,
+                             uint32_t device_id, std::span<const uint8_t> driver_uuid,
+                             std::span<const uint8_t> blob);
+bool LoadVkPipelineCacheBlob(const std::filesystem::path& path, uint32_t vendor_id,
+                             uint32_t device_id, std::span<const uint8_t> driver_uuid,
+                             std::vector<uint8_t>& out_blob);
+
+// Thread-safe background pre-warming worker pool for async pipeline compilation jobs.
+class AsyncPipelinePrewarmer {
+public:
+	explicit AsyncPipelinePrewarmer(uint32_t worker_count = 2);
+	~AsyncPipelinePrewarmer();
+	KYTY_CLASS_NO_COPY(AsyncPipelinePrewarmer);
+
+	void                    Enqueue(std::function<void()> job);
+	void                    WaitIdle();
+	[[nodiscard]] uint64_t  CompletedCount() const noexcept {
+        return m_completed.load(std::memory_order_acquire);
+    }
+
+private:
+	void WorkerLoop(std::stop_token token);
+
+	std::mutex                         m_mutex;
+	std::condition_variable_any        m_cv;
+	std::condition_variable            m_idle_cv;
+	std::queue<std::function<void()>>  m_jobs;
+	uint32_t                                m_in_flight = 0;
+	std::atomic<uint64_t>                   m_completed {0};
+	std::vector<std::jthread>               m_workers;
+};
 
 } // namespace Libs::Graphics
 

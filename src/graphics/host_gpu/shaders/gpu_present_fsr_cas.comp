@@ -1,0 +1,145 @@
+#version 450 core
+
+// Beyond-PS5 Presentation Post-Processor:
+//   mode == 0 : Bilinear passthrough
+//   mode == 1 : AMD FidelityFX CAS (Contrast Adaptive Sharpening)
+//   mode == 2 : AMD FidelityFX FSR 1.0 EASU (12-tap edge-adaptive Lanczos-2) + RCAS sharpening
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D u_source;
+layout(set = 0, binding = 1, rgba8) writeonly uniform image2D u_destination;
+
+layout(push_constant) uniform PushConstants {
+	uvec2 input_size;
+	uvec2 output_size;
+	uint  mode;
+	float sharpness;
+	float resolution_scale;
+	uint  reserved;
+} pc;
+
+float Luma(vec3 c) {
+	return dot(c, vec3(0.299, 0.587, 0.114));
+}
+
+vec3 SampleClamped(vec2 uv) {
+	return texture(u_source, clamp(uv, vec2(0.0), vec2(1.0))).rgb;
+}
+
+// 5-tap AMD FidelityFX Contrast Adaptive Sharpening (CAS)
+vec3 ApplyCAS(vec2 uv, vec2 inv_size, float sharpness) {
+	vec3 a = SampleClamped(uv + vec2( 0.0, -inv_size.y));
+	vec3 b = SampleClamped(uv + vec2(-inv_size.x,  0.0));
+	vec3 c = SampleClamped(uv);
+	vec3 d = SampleClamped(uv + vec2( inv_size.x,  0.0));
+	vec3 e = SampleClamped(uv + vec2( 0.0,  inv_size.y));
+
+	vec3 mn = min(min(min(a, b), min(d, e)), c);
+	vec3 mx = max(max(max(a, b), max(d, e)), c);
+
+	vec3 rcp_mx = 1.0 / max(mx, vec3(1e-5));
+	vec3 amp    = clamp(min(mn, 1.0 - mx) * rcp_mx, 0.0, 1.0);
+	amp         = sqrt(amp);
+
+	float peak = -1.0 / mix(8.0, 5.0, clamp(sharpness, 0.0, 1.0));
+	vec3  w    = amp * peak;
+	vec3  rcp_w = 1.0 / (1.0 + 4.0 * w);
+
+	return clamp((c + (a + b + d + e) * w) * rcp_w, 0.0, 1.0);
+}
+
+// Approximated Lanczos-2 kernel used by FSR 1.0 EASU
+float EasuWeight(float d2, float lob) {
+	float w = clamp(1.0 - d2 * 0.25, 0.0, 1.0);
+	return w * w * (1.0 - lob * d2);
+}
+
+// 12-tap Edge-Adaptive Spatial Upscaling (FSR 1.0 EASU) + lightweight RCAS pass
+vec3 ApplyFSR1(vec2 uv, vec2 inv_in, float sharpness) {
+	vec2 pp = uv * vec2(pc.input_size) - 0.5;
+	vec2 fp = floor(pp);
+	vec2 f  = pp - fp;
+
+	// Fetch 12-tap cross neighborhood around (fp)
+	vec2 base = (fp + 0.5) * inv_in;
+	vec3 b = SampleClamped(base + vec2( 0.0, -1.0) * inv_in);
+	vec3 c = SampleClamped(base + vec2( 1.0, -1.0) * inv_in);
+	vec3 e = SampleClamped(base + vec2(-1.0,  0.0) * inv_in);
+	vec3 f0 = SampleClamped(base + vec2( 0.0,  0.0) * inv_in);
+	vec3 g = SampleClamped(base + vec2( 1.0,  0.0) * inv_in);
+	vec3 h = SampleClamped(base + vec2( 2.0,  0.0) * inv_in);
+	vec3 i = SampleClamped(base + vec2(-1.0,  1.0) * inv_in);
+	vec3 j = SampleClamped(base + vec2( 0.0,  1.0) * inv_in);
+	vec3 k = SampleClamped(base + vec2( 1.0,  1.0) * inv_in);
+	vec3 l = SampleClamped(base + vec2( 2.0,  1.0) * inv_in);
+	vec3 n = SampleClamped(base + vec2( 0.0,  2.0) * inv_in);
+	vec3 o = SampleClamped(base + vec2( 1.0,  2.0) * inv_in);
+
+	// Estimate local gradient direction and edge anisotropy
+	float lb = Luma(b), lc = Luma(c), le = Luma(e), lf = Luma(f0);
+	float lg = Luma(g), lh = Luma(h), li = Luma(i), lj = Luma(j);
+	float lk = Luma(k), ll = Luma(l), ln = Luma(n), lo = Luma(o);
+
+	float gx = (lg - le) + (lk - li) + (lh - lf) + (ll - lj);
+	float gy = (lj - lb) + (lk - lc) + (ln - lf) + (lo - lg);
+	float edge_len = sqrt(gx * gx + gy * gy);
+	vec2  dir = edge_len > 1e-4 ? vec2(gx, gy) / edge_len : vec2(1.0, 0.0);
+	float aniso = clamp(edge_len * 1.5, 0.0, 1.0);
+	vec2  stretch = vec2(mix(1.0, 0.65, aniso), mix(1.0, 1.35, aniso));
+	float lob = mix(0.25, 0.45, aniso);
+
+	vec3  accum = vec3(0.0);
+	float wsum  = 0.0;
+
+	const vec2 offsets[12] = vec2[12](
+		vec2( 0.0, -1.0), vec2( 1.0, -1.0),
+		vec2(-1.0,  0.0), vec2( 0.0,  0.0), vec2( 1.0,  0.0), vec2( 2.0,  0.0),
+		vec2(-1.0,  1.0), vec2( 0.0,  1.0), vec2( 1.0,  1.0), vec2( 2.0,  1.0),
+		vec2( 0.0,  2.0), vec2( 1.0,  2.0)
+	);
+	const vec3 taps[12] = vec3[12](b, c, e, f0, g, h, i, j, k, l, n, o);
+
+	for (int idx = 0; idx < 12; ++idx) {
+		vec2  d  = offsets[idx] - f;
+		vec2  rd = vec2(d.x * dir.x + d.y * dir.y, -d.x * dir.y + d.y * dir.x) * stretch;
+		float w  = EasuWeight(dot(rd, rd), lob);
+		accum += taps[idx] * w;
+		wsum  += w;
+	}
+
+	vec3 upscaled = accum / max(wsum, 1e-5);
+
+	// Anti-ringing clamp against the 4 nearest bilinear taps
+	vec3 min4 = min(min(f0, g), min(j, k));
+	vec3 max4 = max(max(f0, g), max(j, k));
+	upscaled  = clamp(upscaled, min4, max4);
+
+	// Blend optional RCAS contrast-adaptive sharpening
+	if (sharpness > 0.001) {
+		vec3 cas = ApplyCAS(uv, inv_in, sharpness);
+		upscaled = clamp(mix(upscaled, cas, 0.35 * clamp(sharpness, 0.0, 1.0)), 0.0, 1.0);
+	}
+	return upscaled;
+}
+
+void main() {
+	uvec2 coord = gl_GlobalInvocationID.xy;
+	if (coord.x >= pc.output_size.x || coord.y >= pc.output_size.y) {
+		return;
+	}
+
+	vec2 uv     = (vec2(coord) + 0.5) / vec2(pc.output_size);
+	vec2 inv_in = 1.0 / max(vec2(pc.input_size), vec2(1.0));
+
+	vec3 color;
+	if (pc.mode == 1u) {
+		color = ApplyCAS(uv, inv_in, pc.sharpness);
+	} else if (pc.mode == 2u) {
+		color = ApplyFSR1(uv, inv_in, pc.sharpness);
+	} else {
+		color = SampleClamped(uv);
+	}
+
+	imageStore(u_destination, ivec2(coord), vec4(color, 1.0));
+}

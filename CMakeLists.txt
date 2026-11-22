@@ -319,6 +319,7 @@ add_gpu_blit_shader(gpu_blit_color_to_ms_depth gpu_blit_color_to_ms_depth.frag)
 add_gpu_blit_shader(gpu_video_out_overlay gpu_video_out_overlay.frag)
 add_gpu_blit_shader(gpu_imgui_hdr gpu_video_out_overlay.frag -DIMGUI_HDR=1)
 add_gpu_blit_shader(gpu_pssr_linear gpu_pssr_linear.comp)
+add_gpu_blit_shader(gpu_present_fsr_cas gpu_present_fsr_cas.comp)
 add_gpu_blit_shader(gpu_bvh_mirror gpu_bvh_mirror.comp)
 add_gpu_blit_shader(gpu_bvh_walk gpu_bvh_mirror.comp -DWALK=1)
 # At SPIR-V 1.6 glslang declares a task shader's workgroup size with LocalSizeId, which needs maintenance4.
@@ -704,6 +705,77 @@ add_executable(gpu_blit_shader_tests EXCLUDE_FROM_ALL
 	"${gpu_blit_generated_dir}/gpu_mesh_indirect_spv.h")
 target_link_libraries(gpu_blit_shader_tests kyty_test_gtest Vulkan::Headers)
 target_include_directories(gpu_blit_shader_tests PRIVATE ${inc_headers})
+
+add_executable(beyond_ps5_suite_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/BeyondPs5SuiteTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/presentation/presentUpscaler.cpp"
+	"${gpu_blit_generated_dir}/gpu_present_fsr_cas_spv.h")
+target_link_libraries(beyond_ps5_suite_tests common Vulkan::Headers)
+target_include_directories(beyond_ps5_suite_tests PRIVATE ${inc_headers})
+
+file(GLOB rdna2_recompiler_test_src CONFIGURE_DEPENDS
+	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/shaderPixelParameter.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/shaderVertexMetadata.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/cfg/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/decode/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/translate/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/backend/spirv/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/opcodes/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/*.cpp"
+)
+add_executable(rdna2_atomics64_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/Rdna2Atomics64Tests.cpp"
+	${rdna2_recompiler_test_src})
+target_link_libraries(rdna2_atomics64_tests common Vulkan::Headers spirv-tools spirv-tools-opt fmt::fmt xxhash xbyak::xbyak)
+target_include_directories(rdna2_atomics64_tests PRIVATE ${inc_headers})
+
+add_executable(rdna2_breakthrough2_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/Rdna2Breakthrough2Tests.cpp"
+	${rdna2_recompiler_test_src})
+target_link_libraries(rdna2_breakthrough2_tests common Vulkan::Headers spirv-tools spirv-tools-opt fmt::fmt xxhash xbyak::xbyak)
+target_include_directories(rdna2_breakthrough2_tests PRIVATE ${inc_headers})
+
+add_executable(core_breakthrough3_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/CoreBreakthrough3Tests.cpp"
+	"${KYTY_SOURCE_DIR}/libs/libFios2.cpp"
+	"${KYTY_SOURCE_DIR}/loader/symbolDatabase.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/asyncComputeQueue.cpp")
+target_link_libraries(core_breakthrough3_tests common Vulkan::Headers nlohmann_json::nlohmann_json)
+target_include_directories(core_breakthrough3_tests PRIVATE ${inc_headers})
+
+add_executable(core_breakthrough4_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/CoreBreakthrough4Tests.cpp"
+	"${KYTY_SOURCE_DIR}/libs/ngs2.cpp"
+	"${KYTY_SOURCE_DIR}/libs/audio3d.cpp"
+	"${KYTY_SOURCE_DIR}/kernel/semaphore.cpp"
+	"${KYTY_SOURCE_DIR}/loader/timer.cpp"
+	${rdna2_recompiler_test_src})
+target_link_libraries(core_breakthrough4_tests common Vulkan::Headers spirv-tools spirv-tools-opt fmt::fmt xxhash xbyak::xbyak LibAtrac9)
+target_include_directories(core_breakthrough4_tests PRIVATE ${inc_headers})
+
+add_kyty_full_emulator_test(core_breakthrough5_tests "${KYTY_TESTS_DIR}/CoreBreakthrough5Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough6_tests "${KYTY_TESTS_DIR}/CoreBreakthrough6Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough7_tests "${KYTY_TESTS_DIR}/CoreBreakthrough7Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough8_tests "${KYTY_TESTS_DIR}/CoreBreakthrough8Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough9_tests "${KYTY_TESTS_DIR}/CoreBreakthrough9Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough10_tests "${KYTY_TESTS_DIR}/CoreBreakthrough10Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough11_tests "${KYTY_TESTS_DIR}/CoreBreakthrough11Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough12_tests "${KYTY_TESTS_DIR}/CoreBreakthrough12Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough13_tests "${KYTY_TESTS_DIR}/CoreBreakthrough13Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough14_tests "${KYTY_TESTS_DIR}/CoreBreakthrough14Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough15_tests "${KYTY_TESTS_DIR}/CoreBreakthrough15Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough16_tests "${KYTY_TESTS_DIR}/CoreBreakthrough16Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough17_tests "${KYTY_TESTS_DIR}/CoreBreakthrough17Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough18_tests "${KYTY_TESTS_DIR}/CoreBreakthrough18Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough19_tests "${KYTY_TESTS_DIR}/CoreBreakthrough19Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough20_tests "${KYTY_TESTS_DIR}/CoreBreakthrough20Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough21_tests "${KYTY_TESTS_DIR}/CoreBreakthrough21Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough22_tests "${KYTY_TESTS_DIR}/CoreBreakthrough22Tests.cpp")
+add_kyty_full_emulator_test(core_breakthrough23_tests "${KYTY_TESTS_DIR}/CoreBreakthrough23Tests.cpp")
+add_kyty_full_emulator_test(end_to_end_replay_harness "${KYTY_TESTS_DIR}/EndToEndReplayHarness.cpp")
 
 # These tests use exceptions.
 if(NOT KYTY_CLANG_CL)

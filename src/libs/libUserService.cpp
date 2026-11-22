@@ -65,7 +65,9 @@ static KYTY_SYSV_ABI int UserServiceInitialize2() {
 static KYTY_SYSV_ABI int UserServiceGetInitialUser(int* user_id) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(user_id == nullptr);
+	if (user_id == nullptr) {
+		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+	}
 
 	*user_id = Config::GetUserId();
 
@@ -75,7 +77,9 @@ static KYTY_SYSV_ABI int UserServiceGetInitialUser(int* user_id) {
 static KYTY_SYSV_ABI int UserServiceGetEvent(SceUserServiceEvent* event) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(event == nullptr);
+	if (event == nullptr) {
+		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+	}
 
 	static bool logged_in[Config::MAX_PLAYERS] = {};
 
@@ -95,7 +99,9 @@ static KYTY_SYSV_ABI int UserServiceGetEvent(SceUserServiceEvent* event) {
 static KYTY_SYSV_ABI int UserServiceGetLoginUserIdList(UserServiceLoginUserIdList* user_id_list) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(user_id_list == nullptr);
+	if (user_id_list == nullptr) {
+		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+	}
 
 	int count = 0;
 	for (int player = 0; player < Config::MAX_PLAYERS; player++) {

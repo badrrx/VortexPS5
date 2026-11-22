@@ -26,13 +26,23 @@ uint32_t MeshLoad(EmitterState& state, uint32_t variable, spv::StorageClass stor
 
 uint32_t MeshOutputType(EmitterState& state, IR::StageOutputKind kind) {
 	switch (kind) {
-		case IR::StageOutputKind::Layer: return TypeU32(state);
+		case IR::StageOutputKind::Layer:
+		case IR::StageOutputKind::ViewportIndex: return TypeU32(state);
+		case IR::StageOutputKind::PointSize:
 		case IR::StageOutputKind::ClipDistance:
 		case IR::StageOutputKind::CullDistance: return TypeF32(state);
 		case IR::StageOutputKind::Position:
 		case IR::StageOutputKind::Parameter: return TypeF32Vector(state, 4);
-		default: EXIT("unsupported mesh output kind=%u\n", static_cast<uint32_t>(kind));
+		default:
+			LOGF_COLOR(Log::Color::Yellow,
+			           "MeshShader: unsupported mesh output kind=%u — falling back to vec4\n",
+			           static_cast<uint32_t>(kind));
+			return TypeF32Vector(state, 4);
 	}
+}
+
+bool IsPerPrimitiveMeshOutput(IR::StageOutputKind kind) {
+	return kind == IR::StageOutputKind::Layer || kind == IR::StageOutputKind::ViewportIndex;
 }
 
 uint32_t MeshPrimitiveType(EmitterState& state) {
@@ -57,9 +67,9 @@ void DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,
 			                                                   ConstantU32(state, clip ? clip_distance_count
 			                                                                           : cull_distance_count))
 			                              : type;
+			const bool per_prim = IsPerPrimitiveMeshOutput(output.kind);
 			variable = MeshArray(state, spv::StorageClassOutput, element_type,
-			                     output.kind == IR::StageOutputKind::Layer ? mesh.max_primitives
-			                                                             : mesh.max_vertices);
+			                     per_prim ? mesh.max_primitives : mesh.max_vertices);
 			state.interface_variables.push_back(variable);
 			state.builder.AddName(variable, output.debug_name.c_str());
 			if (output.kind == IR::StageOutputKind::Parameter) {
@@ -69,16 +79,21 @@ void DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,
 				const auto builtin = clip ? spv::BuiltInClipDistance
 				                     : cull ? spv::BuiltInCullDistance
 				                     : output.kind == IR::StageOutputKind::Layer ? spv::BuiltInLayer
-				                                                                 : spv::BuiltInPosition;
+				                     : output.kind == IR::StageOutputKind::ViewportIndex
+				                         ? spv::BuiltInViewportIndex
+				                     : output.kind == IR::StageOutputKind::PointSize
+				                         ? spv::BuiltInPointSize
+				                         : spv::BuiltInPosition;
 				state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationBuiltIn, builtin);
 			}
-			if (output.kind == IR::StageOutputKind::Layer) {
+			if (per_prim) {
 				state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationPerPrimitiveEXT);
 			}
 		}
 		output.variable_id = variable;
-		// Only Layer is read by another invocation, through the primitive's provoking vertex.
-		const bool shared = output.kind == IR::StageOutputKind::Layer;
+		// Per-primitive outputs (Layer, ViewportIndex) are read by another invocation through the
+		// primitive's provoking vertex.
+		const bool shared = IsPerPrimitiveMeshOutput(output.kind);
 		output.mesh_data_variable =
 		    MeshArray(state, shared ? spv::StorageClassWorkgroup : spv::StorageClassPrivate, type,
 		              shared ? mesh.max_vertices : state.lane_count);
@@ -107,10 +122,12 @@ uint32_t MeshOutputPointer(EmitterState& state, IR::StageOutputKind kind, uint32
 		return binding.kind == kind && binding.index == index;
 	});
 	if (output == state.outputs.end()) {
-		EXIT("mesh export has no output binding: kind=%u index=%u\n", static_cast<uint32_t>(kind),
-		     index);
+		LOGF_COLOR(Log::Color::Yellow,
+		           "MeshShader: export has no output binding (kind=%u, index=%u) — skipping store\n",
+		           static_cast<uint32_t>(kind), index);
+		return 0;
 	}
-	const bool shared = kind == IR::StageOutputKind::Layer;
+	const bool shared = IsPerPrimitiveMeshOutput(kind);
 	return MeshElement(
 	    state, output->mesh_data_variable,
 	    shared ? spv::StorageClassWorkgroup : spv::StorageClassPrivate, MeshOutputType(state, kind),
@@ -163,7 +180,7 @@ void EmitMeshEntryPoint(EmitterState& state) {
 		state.builder.AddFunction(spv::OpULessThan, TypeBool(state), is_vertex, index, vertices);
 		EmitIfCondition(state, is_vertex, [&] {
 			for (const auto& output: state.outputs) {
-				if (output.kind == IR::StageOutputKind::Layer) {
+				if (IsPerPrimitiveMeshOutput(output.kind)) {
 					continue;
 				}
 				const auto type  = MeshOutputType(state, output.kind);
@@ -218,15 +235,15 @@ void EmitMeshEntryPoint(EmitterState& state) {
 			                                      TypeBool(state), index),
 			                          culled);
 			for (const auto& output: state.outputs) {
-				if (output.kind != IR::StageOutputKind::Layer) {
+				if (!IsPerPrimitiveMeshOutput(output.kind)) {
 					continue;
 				}
-				const auto layer = MeshLoad(state, output.mesh_data_variable,
-				                            spv::StorageClassWorkgroup, TypeU32(state),
-				                            vertex[state.input_info.vertex->mesh.provoking_vertex]);
-				const auto pointer = MeshElement(state, output.variable_id, spv::StorageClassOutput,
-				                                 TypeU32(state), index);
-				state.builder.AddFunction(spv::OpStore, pointer, layer);
+				const auto prim_val = MeshLoad(state, output.mesh_data_variable,
+				                               spv::StorageClassWorkgroup, TypeU32(state),
+				                               vertex[state.input_info.vertex->mesh.provoking_vertex]);
+				const auto pointer  = MeshElement(state, output.variable_id, spv::StorageClassOutput,
+				                                  TypeU32(state), index);
+				state.builder.AddFunction(spv::OpStore, pointer, prim_val);
 			}
 		});
 	}

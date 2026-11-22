@@ -303,7 +303,9 @@ static int ConvertMbcsToUtf8(CesContext* context, const uint8_t* source, uint32_
 	const bool bounded_end = source_max != 0 && source_size == source_max;
 #if !defined(_WIN32)
 	const auto converter = SDL_iconv_open("UTF-8", context->profile->encoding);
-	EXIT_IF(converter == reinterpret_cast<SDL_iconv_t>(-1));
+	if (converter == reinterpret_cast<SDL_iconv_t>(-1)) {
+		return CES_ERROR_INVALID_ENCODE;
+	}
 #endif
 
 	const char*           input      = reinterpret_cast<const char*>(source);

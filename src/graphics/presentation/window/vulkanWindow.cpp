@@ -6,6 +6,7 @@
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "graphics/host_gpu/asyncComputeQueue.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -403,15 +404,36 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	                   vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
 	                   vk::PhysicalDeviceRayQueryFeaturesKHR,
 	                   vk::PhysicalDeviceCooperativeMatrixFeaturesKHR,
-	                   vk::PhysicalDeviceShaderFloat8FeaturesEXT>
+	                   vk::PhysicalDeviceShaderFloat8FeaturesEXT,
+	                   vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
+	                   vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT,
+	                   vk::PhysicalDeviceShaderObjectFeaturesEXT>
 	    supported;
 	auto& [supported2, supported12, supported13, robustness2, workgroup_layout, mesh,
 	       feedback_layout, feedback_dynamic, provoking_vertex, maintenance8, shader_clock,
 	       image_atomic_int64, conditional_rendering, barycentric, compute_derivatives,
-	       acceleration_structure, ray_query, cooperative_matrix, float8] = supported;
+	       acceleration_structure, ray_query, cooperative_matrix, float8, eds3, gpl,
+	       shader_object] = supported;
 	graphics.memory_budget_ext_enabled = add(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 	add(VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
 	const bool extended_dynamic_state = add(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+	const bool eds3_ext               = add(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+	if (!eds3_ext) {
+		supported.unlink<vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT>();
+	}
+	const bool gpl_ext =
+	    HasExtension(available_extensions, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+	    HasExtension(available_extensions, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+	if (gpl_ext) {
+		add(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+		add(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+	} else {
+		supported.unlink<vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT>();
+	}
+	const bool shader_object_ext = add(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+	if (!shader_object_ext) {
+		supported.unlink<vk::PhysicalDeviceShaderObjectFeaturesEXT>();
+	}
 	if (!add(VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME)) {
 		supported.unlink<vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR>();
 	}
@@ -533,6 +555,17 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	                                            feedback_dynamic.attachmentFeedbackLoopDynamicState;
 	graphics.maintenance8_enabled             = maintenance8.maintenance8;
 	graphics.ray_query_enabled                = ray_query_enabled;
+	graphics.eds3_polygon_mode                = eds3_ext && eds3.extendedDynamicState3PolygonMode;
+	graphics.eds3_depth_clip_enable           = eds3_ext && eds3.extendedDynamicState3DepthClipEnable;
+	graphics.eds3_color_blend_enable          = eds3_ext && eds3.extendedDynamicState3ColorBlendEnable;
+	graphics.eds3_color_blend_equation        = eds3_ext && eds3.extendedDynamicState3ColorBlendEquation;
+	graphics.eds3_color_write_mask            = eds3_ext && eds3.extendedDynamicState3ColorWriteMask;
+	graphics.extended_dynamic_state3_enabled  =
+	    graphics.eds3_polygon_mode || graphics.eds3_depth_clip_enable ||
+	    graphics.eds3_color_blend_enable || graphics.eds3_color_blend_equation ||
+	    graphics.eds3_color_write_mask;
+	graphics.graphics_pipeline_library_enabled = gpl_ext && gpl.graphicsPipelineLibrary;
+	graphics.shader_object_enabled             = shader_object_ext && shader_object.shaderObject;
 	// A coarser alignment rounds the range up past the guest's last byte.
 	graphics.robust_buffer_access_enabled =
 	    robustness2.robustBufferAccess2 &&
@@ -554,6 +587,14 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	     graphics.maintenance8_enabled ? "true" : "false");
 	LOGF("Vulkan depth feedback support: %s\n",
 	     graphics.attachment_feedback_loop_enabled ? "true" : "false");
+	LOGF("Vulkan EDS3 support: %s (poly=%d clip=%d blend=%d eq=%d mask=%d)\n",
+	     graphics.extended_dynamic_state3_enabled ? "true" : "false",
+	     graphics.eds3_polygon_mode ? 1 : 0, graphics.eds3_depth_clip_enable ? 1 : 0,
+	     graphics.eds3_color_blend_enable ? 1 : 0, graphics.eds3_color_blend_equation ? 1 : 0,
+	     graphics.eds3_color_write_mask ? 1 : 0);
+	LOGF("Vulkan GPL support: %s | ShaderObject support: %s\n",
+	     graphics.graphics_pipeline_library_enabled ? "true" : "false",
+	     graphics.shader_object_enabled ? "true" : "false");
 	if (graphics.mesh_shader_enabled) {
 		LOGF("Vulkan MeshEXT: invocations=%u vertices=%u primitives=%u shared=%u\n",
 		     graphics.mesh_shader_properties.maxMeshWorkGroupInvocations,
@@ -628,15 +669,39 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	     robustness2.robustImageAccess2 == VK_TRUE ? "true" : "false",
 	     graphics.robust_buffer_access_enabled ? "robustBufferAccess2" : "shader checks");
 
-	const float                     queue_priority = 1.0f;
-	const vk::DeviceQueueCreateInfo queue_create_info {
-	    .queueFamilyIndex = queue_family, .queueCount = 1, .pQueuePriorities = &queue_priority};
+	// Discover dedicated Async Compute queue family (or secondary queue) with safe fallback.
+	uint32_t qfam_count = 0;
+	graphics.physical_device.getQueueFamilyProperties(&qfam_count, nullptr);
+	std::vector<vk::QueueFamilyProperties> qfam_props(qfam_count);
+	graphics.physical_device.getQueueFamilyProperties(&qfam_count, qfam_props.data());
+	const auto async_sel = SelectAsyncComputeQueueFamily(qfam_props, queue_family);
+	graphics.async_compute_queue_family  = async_sel.async_compute_family;
+	graphics.async_compute_queue_index   = async_sel.async_compute_index;
+	graphics.has_dedicated_async_compute = async_sel.distinct_queue;
+
+	const std::array<float, 2>             queue_priorities {1.0f, 1.0f};
+	std::vector<vk::DeviceQueueCreateInfo> queue_create_infos;
+	if (async_sel.distinct_queue && async_sel.async_compute_family == queue_family) {
+		queue_create_infos.push_back({.queueFamilyIndex = queue_family,
+		                              .queueCount       = 2,
+		                              .pQueuePriorities = queue_priorities.data()});
+	} else {
+		queue_create_infos.push_back({.queueFamilyIndex = queue_family,
+		                              .queueCount       = 1,
+		                              .pQueuePriorities = queue_priorities.data()});
+		if (async_sel.distinct_queue) {
+			queue_create_infos.push_back({.queueFamilyIndex = async_sel.async_compute_family,
+			                              .queueCount       = 1,
+			                              .pQueuePriorities = queue_priorities.data()});
+		}
+	}
 	const auto                 extension_count = static_cast<uint32_t>(device_extensions.size());
-	const vk::DeviceCreateInfo create_info {.queueCreateInfoCount    = 1,
-	                                        .pQueueCreateInfos       = &queue_create_info,
-	                                        .enabledExtensionCount   = extension_count,
-	                                        .ppEnabledExtensionNames = device_extensions.data(),
-	                                        .pEnabledFeatures        = &device_features};
+	const vk::DeviceCreateInfo create_info {
+	    .queueCreateInfoCount    = static_cast<uint32_t>(queue_create_infos.size()),
+	    .pQueueCreateInfos       = queue_create_infos.data(),
+	    .enabledExtensionCount   = extension_count,
+	    .ppEnabledExtensionNames = device_extensions.data(),
+	    .pEnabledFeatures        = &device_features};
 	provoking_vertex.transformFeedbackPreservesProvokingVertex = VK_FALSE;
 	image_atomic_int64.sparseImageInt64Atomics                 = VK_FALSE;
 	// Robustness2 enables what the device has; selection requires nullDescriptor.
@@ -656,7 +721,15 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	    // The renderer only uses the Vulkan 1.3 core dynamic states, but RADV (Mesa 26.3) creates
 	    // its PS epilog cache only when this EXT feature is enabled and crashes in vkCmdDraw when
 	    // a depth- or stencil-writing fragment shader needs an epilog.
-	    vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT {.extendedDynamicState = VK_TRUE}};
+	    vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT {.extendedDynamicState = VK_TRUE},
+	    vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT {
+	        .extendedDynamicState3PolygonMode          = graphics.eds3_polygon_mode,
+	        .extendedDynamicState3DepthClipEnable      = graphics.eds3_depth_clip_enable,
+	        .extendedDynamicState3ColorBlendEnable     = graphics.eds3_color_blend_enable,
+	        .extendedDynamicState3ColorBlendEquation   = graphics.eds3_color_blend_equation,
+	        .extendedDynamicState3ColorWriteMask       = graphics.eds3_color_write_mask},
+	    vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT {.graphicsPipelineLibrary = VK_TRUE},
+	    vk::PhysicalDeviceShaderObjectFeaturesEXT {.shaderObject = VK_TRUE}};
 	if (!workgroup_layout.workgroupMemoryExplicitLayout) {
 		create.unlink<vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR>();
 	}
@@ -692,6 +765,15 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	}
 	if (!extended_dynamic_state) {
 		create.unlink<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
+	}
+	if (!graphics.extended_dynamic_state3_enabled) {
+		create.unlink<vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT>();
+	}
+	if (!graphics.graphics_pipeline_library_enabled) {
+		create.unlink<vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT>();
+	}
+	if (!graphics.shader_object_enabled) {
+		create.unlink<vk::PhysicalDeviceShaderObjectFeaturesEXT>();
 	}
 	if (!cooperative_matrix.cooperativeMatrix) {
 		create.unlink<vk::PhysicalDeviceCooperativeMatrixFeaturesKHR>();
@@ -1008,6 +1090,16 @@ void WindowContext::CreateVulkan() {
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(graphic_ctx.device);
 	graphic_ctx.device.getQueue(graphic_ctx.queue_family, 0, &graphic_ctx.queue);
 	EXIT_IF(graphic_ctx.queue == nullptr);
+	if (graphic_ctx.has_dedicated_async_compute) {
+		graphic_ctx.device.getQueue(graphic_ctx.async_compute_queue_family,
+		                            graphic_ctx.async_compute_queue_index,
+		                            &graphic_ctx.async_compute_queue);
+		LOGF("Vulkan Async Compute queue: family=%u index=%u (dedicated)\n",
+		     graphic_ctx.async_compute_queue_family, graphic_ctx.async_compute_queue_index);
+	} else {
+		graphic_ctx.async_compute_queue = graphic_ctx.queue;
+		LOGF("Vulkan Async Compute queue: sharing universal family=%u\n", graphic_ctx.queue_family);
+	}
 	Dlss::Init(graphic_ctx, VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr,
 	           VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr);
 	Fsr::Init(graphic_ctx, VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr);

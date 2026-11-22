@@ -609,19 +609,25 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::BUFFER_ATOMIC_SWAP:
 		case Opcode::BUFFER_ATOMIC_CMPSWAP:
 		case Opcode::BUFFER_ATOMIC_SWAP_X2:
+		case Opcode::BUFFER_ATOMIC_CMPSWAP_X2:
 		case Opcode::BUFFER_ATOMIC_ADD:
 		case Opcode::BUFFER_ATOMIC_ADD_X2:
 		case Opcode::BUFFER_ATOMIC_SUB:
+		case Opcode::BUFFER_ATOMIC_SUB_X2:
 		case Opcode::BUFFER_ATOMIC_SMIN:
+		case Opcode::BUFFER_ATOMIC_SMIN_X2:
 		case Opcode::BUFFER_ATOMIC_UMIN:
 		case Opcode::BUFFER_ATOMIC_UMIN_X2:
 		case Opcode::BUFFER_ATOMIC_SMAX:
+		case Opcode::BUFFER_ATOMIC_SMAX_X2:
 		case Opcode::BUFFER_ATOMIC_UMAX:
+		case Opcode::BUFFER_ATOMIC_UMAX_X2:
 		case Opcode::BUFFER_ATOMIC_AND:
 		case Opcode::BUFFER_ATOMIC_AND_X2:
 		case Opcode::BUFFER_ATOMIC_OR:
 		case Opcode::BUFFER_ATOMIC_OR_X2:
 		case Opcode::BUFFER_ATOMIC_XOR:
+		case Opcode::BUFFER_ATOMIC_XOR_X2:
 		case Opcode::BUFFER_ATOMIC_FMIN:
 		case Opcode::BUFFER_ATOMIC_FMAX:
 		case Opcode::BUFFER_LOAD_SBYTE:
@@ -644,6 +650,28 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::FLAT_STORE_DWORDX2:
 		case Opcode::FLAT_STORE_DWORDX3:
 		case Opcode::FLAT_STORE_DWORDX4:
+		case Opcode::FLAT_ATOMIC_SWAP:
+		case Opcode::FLAT_ATOMIC_CMPSWAP:
+		case Opcode::FLAT_ATOMIC_ADD:
+		case Opcode::FLAT_ATOMIC_SUB:
+		case Opcode::FLAT_ATOMIC_SMIN:
+		case Opcode::FLAT_ATOMIC_UMIN:
+		case Opcode::FLAT_ATOMIC_SMAX:
+		case Opcode::FLAT_ATOMIC_UMAX:
+		case Opcode::FLAT_ATOMIC_AND:
+		case Opcode::FLAT_ATOMIC_OR:
+		case Opcode::FLAT_ATOMIC_XOR:
+		case Opcode::FLAT_ATOMIC_SWAP_X2:
+		case Opcode::FLAT_ATOMIC_CMPSWAP_X2:
+		case Opcode::FLAT_ATOMIC_ADD_X2:
+		case Opcode::FLAT_ATOMIC_SUB_X2:
+		case Opcode::FLAT_ATOMIC_SMIN_X2:
+		case Opcode::FLAT_ATOMIC_UMIN_X2:
+		case Opcode::FLAT_ATOMIC_SMAX_X2:
+		case Opcode::FLAT_ATOMIC_UMAX_X2:
+		case Opcode::FLAT_ATOMIC_AND_X2:
+		case Opcode::FLAT_ATOMIC_OR_X2:
+		case Opcode::FLAT_ATOMIC_XOR_X2:
 		case Opcode::DS_ADD_U32:
 		case Opcode::DS_ADD_U64:
 		case Opcode::DS_ADD_RTN_U32:

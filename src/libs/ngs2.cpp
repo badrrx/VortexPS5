@@ -30,8 +30,12 @@ LIB_NAME("Ngs2", "Ngs2");
 
 constexpr int32_t NGS2_ERROR_INVALID_SYSTEM_HANDLE =
     static_cast<int32_t>(0x804a8201u);
+constexpr int32_t NGS2_ERROR_INVALID_VOICE_HANDLE =
+    static_cast<int32_t>(0x804a8203u);
 constexpr int32_t NGS2_ERROR_INVALID_OUT_ADDRESS =
     static_cast<int32_t>(0x804a8010u);
+constexpr int32_t NGS2_ERROR_INVALID_PARAM_LIST =
+    static_cast<int32_t>(0x804a8052u);
 constexpr int32_t NGS2_ERROR_INVALID_NUM_WAVEFORM_BLOCKS =
     static_cast<int32_t>(0x804a8053u);
 constexpr int32_t NGS2_ERROR_FULL_WAVEFORM_BLOCKS =
@@ -1164,7 +1168,9 @@ static Ngs2SystemOption Ngs2DefaultSystemOption() {
 int KYTY_SYSV_ABI Ngs2SystemResetOption(Ngs2SystemOption* option) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(option == nullptr);
+	if (option == nullptr) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
 
 	*option = Ngs2DefaultSystemOption();
 	return OK;
@@ -1196,7 +1202,9 @@ int KYTY_SYSV_ABI Ngs2SystemQueryBufferSize(const Ngs2SystemOption* option,
                                             Ngs2ContextBufferInfo*  buffer_info) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(buffer_info == nullptr);
+	if (buffer_info == nullptr) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
 
 	auto default_option = Ngs2DefaultSystemOption();
 	if (option == nullptr) {
@@ -1204,7 +1212,9 @@ int KYTY_SYSV_ABI Ngs2SystemQueryBufferSize(const Ngs2SystemOption* option,
 		LOGF("\t option            = nullptr, using reset defaults\n");
 	}
 
-	EXIT_NOT_IMPLEMENTED(option->size != sizeof(Ngs2SystemOption));
+	if (option->size != 0 && option->size < sizeof(Ngs2SystemOption)) {
+		return NGS2_ERROR_INVALID_PARAM_LIST;
+	}
 
 	std::memset(buffer_info, 0, sizeof(Ngs2ContextBufferInfo));
 	buffer_info->host_buffer_size = sizeof(Ngs2Internal);
@@ -1216,10 +1226,10 @@ int KYTY_SYSV_ABI Ngs2SystemCreate(const Ngs2SystemOption*      option,
                                    const Ngs2ContextBufferInfo* buffer_info, uintptr_t* handle) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(buffer_info == nullptr);
-	EXIT_NOT_IMPLEMENTED(handle == nullptr);
-	EXIT_NOT_IMPLEMENTED(buffer_info->host_buffer == nullptr);
-	EXIT_NOT_IMPLEMENTED(buffer_info->host_buffer_size < sizeof(Ngs2Internal));
+	if (buffer_info == nullptr || handle == nullptr || buffer_info->host_buffer == nullptr ||
+	    buffer_info->host_buffer_size < sizeof(Ngs2Internal)) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
 
 	auto default_option = Ngs2DefaultSystemOption();
 	if (option == nullptr) {
@@ -1227,7 +1237,9 @@ int KYTY_SYSV_ABI Ngs2SystemCreate(const Ngs2SystemOption*      option,
 		LOGF("\t option            = nullptr, using reset defaults\n");
 	}
 
-	EXIT_NOT_IMPLEMENTED(option->size != sizeof(Ngs2SystemOption));
+	if (option->size != 0 && option->size < sizeof(Ngs2SystemOption)) {
+		return NGS2_ERROR_INVALID_PARAM_LIST;
+	}
 
 	auto* ngs = Ngs2CreateSystemInternal(option, buffer_info);
 
@@ -1322,7 +1334,17 @@ static void Ngs2FillDefaultRackOption(uint32_t rack_id, Ngs2RackOptionUnion* opt
 			option->custom_sampler.max_ajm_atrac9_decoders                               = 0;
 			option->custom_sampler.max_codec_caches                                      = 32;
 			break;
-		default: EXIT("unknown rack_id for default option: 0x%" PRIx32 "\n", rack_id);
+		default:
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Ngs2: unknown rack_id 0x%" PRIx32 " — using passthrough custom submixer defaults\n",
+			           rack_id);
+			option->common.size                   = sizeof(Ngs2RackOption);
+			option->common.max_grain_samples      = 512;
+			option->common.max_voices             = 16;
+			option->common.max_input_delay_blocks = 1;
+			option->common.max_matrices           = 1;
+			option->common.max_ports              = 8;
+			break;
 	}
 }
 
@@ -1330,7 +1352,9 @@ int KYTY_SYSV_ABI Ngs2RackQueryBufferSize(uint32_t rack_id, const Ngs2RackOption
                                           Ngs2ContextBufferInfo* buffer_info) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(buffer_info == nullptr);
+	if (buffer_info == nullptr) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
 
 	Ngs2RackOptionUnion default_option {};
 	if (option == nullptr) {
@@ -1354,10 +1378,10 @@ int KYTY_SYSV_ABI Ngs2SystemCreateWithAllocator(const Ngs2SystemOption*    optio
                                                 uintptr_t*                 handle) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(allocator == nullptr);
-	EXIT_NOT_IMPLEMENTED(handle == nullptr);
-	EXIT_NOT_IMPLEMENTED(allocator->alloc_handler == nullptr);
-	EXIT_NOT_IMPLEMENTED(allocator->free_handler == nullptr);
+	if (allocator == nullptr || handle == nullptr || allocator->alloc_handler == nullptr ||
+	    allocator->free_handler == nullptr) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
 
 	auto default_option = Ngs2DefaultSystemOption();
 	if (option == nullptr) {
@@ -2184,7 +2208,12 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 
 int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBufferInfo* buffer_info,
                                    uint32_t num_buffer_info) {
-	EXIT_NOT_IMPLEMENTED(buffer_info == nullptr || system_handle == 0 || num_buffer_info == 0);
+	if (system_handle == 0) {
+		return NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+	}
+	if (buffer_info == nullptr || num_buffer_info == 0) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
 	auto* ngs = reinterpret_cast<Ngs2Internal*>(system_handle);
 	Common::LockGuard lock(ngs->mutex);
 	std::vector<std::vector<float>> output_mix(num_buffer_info);
@@ -2215,16 +2244,18 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 		if (!mastering || !voice->has_samples) {
 			continue;
 		}
-		EXIT_NOT_IMPLEMENTED(voice->output_id >= num_buffer_info);
+		if (voice->output_id >= num_buffer_info) {
+			continue;
+		}
 		const auto& output = buffer_info[voice->output_id];
-		EXIT_NOT_IMPLEMENTED(output.buffer == nullptr);
-		EXIT_NOT_IMPLEMENTED(output.waveform_type != 0x12 && output.waveform_type != 0x18);
-		// Surround inputs mixed into fewer output channels use their own downmix levels.
-		EXIT_NOT_IMPLEMENTED(voice->rack->type == Ngs2RackType::Mastering && voice->channels > 2 &&
-		                     output.num_channels < voice->channels);
-		EXIT_NOT_IMPLEMENTED(output.buffer_size < grain * output.num_channels *
-		                                               (output.waveform_type == 0x12 ? sizeof(int16_t)
-		                                                                             : sizeof(float)));
+		if (output.buffer == nullptr || (output.waveform_type != 0x12 && output.waveform_type != 0x18)) {
+			continue;
+		}
+		const size_t min_bytes = grain * output.num_channels *
+		                         (output.waveform_type == 0x12 ? sizeof(int16_t) : sizeof(float));
+		if (output.buffer_size < min_bytes) {
+			continue;
+		}
 		float* pcm = nullptr;
 		if (output.waveform_type == 0x12) {
 			auto& mix = output_mix[voice->output_id];
@@ -2929,7 +2960,10 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						     static_cast<uint64_t>(voice->callback_data), voice->callback_flags);
 						break;
 					}
-					default: EXIT("unknown id: 0x%04" PRIx32 "\n", cid);
+					default:
+						LOGF("\t warning: ignoring unhandled NGS2 common control id=0x%04" PRIx32 "\n",
+						     cid);
+						break;
 				}
 				break;
 			}
@@ -2979,7 +3013,10 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						voice->reverb.Apply();
 						break;
 					}
-					default: EXIT("unsupported reverb control: 0x%08" PRIx32 "\n", param->id);
+					default:
+						LOGF("\t warning: ignoring unhandled reverb control 0x%08" PRIx32 "\n",
+						     param->id);
+						break;
 				}
 				break;
 			}
@@ -3003,7 +3040,10 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						break;
 					}
 					case 5: voice->output_id = values[0]; break;
-					default: EXIT("unsupported mastering control: 0x%08" PRIx32 "\n", param->id);
+					default:
+						LOGF("\t warning: ignoring unhandled mastering control 0x%08" PRIx32 "\n",
+						     param->id);
+						break;
 				}
 				break;
 			}
@@ -3119,7 +3159,10 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						    filter, voice->rack->ngs->option.sample_rate, voice->channels);
 						break;
 					}
-					default: EXIT("unsupported sampler control: 0x%08" PRIx32 "\n", param->id);
+					default:
+						LOGF("\t warning: ignoring unhandled sampler control 0x%08" PRIx32 "\n",
+						     param->id);
+						break;
 				}
 				break;
 			}
@@ -3146,11 +3189,18 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						break;
 					case 1: voice->output_id = values[0]; break;
 					default:
-						EXIT("unsupported custom mastering control: 0x%08" PRIx32 "\n", param->id);
+						LOGF_COLOR(Log::Color::Yellow,
+						           "Ngs2VoiceControl: ignoring unsupported custom mastering "
+						           "control 0x%08" PRIx32 "\n",
+						           param->id);
+						break;
 				}
 				break;
 			}
-			default: EXIT("unknown rack_id: 0x%" PRIx32 "\n", rack_id);
+			default:
+				LOGF_COLOR(Log::Color::Yellow,
+				           "Ngs2VoiceControl: ignoring unknown rack_id 0x%" PRIx32 "\n", rack_id);
+				break;
 		}
 
 		if (param->next == 0) {
@@ -3165,6 +3215,12 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 
 int KYTY_SYSV_ABI Ngs2VoiceRunCommands(uintptr_t voice_handle, const void* commands,
                                        size_t num_commands) {
+	if (voice_handle == 0) {
+		return NGS2_ERROR_INVALID_VOICE_HANDLE;
+	}
+	if (num_commands != 0 && commands == nullptr) {
+		return NGS2_ERROR_INVALID_PARAM_LIST;
+	}
 	struct Command {
 		uint32_t id;
 		uint8_t  flags, type;
@@ -3184,22 +3240,34 @@ int KYTY_SYSV_ABI Ngs2VoiceRunCommands(uintptr_t voice_handle, const void* comma
 		const auto  index = p.id >> 24;
 		switch (p.id & 0xffffffu) {
 			case 2:
-				EXIT_NOT_IMPLEMENTED(p.type != 4);
+				if (p.type != 4) {
+					continue;
+				}
 				voice->SetEvent(p.value.u);
 				break;
 			case 5:
-				EXIT_NOT_IMPLEMENTED(p.type != 0x11);
+				if (p.type != 0x11) {
+					continue;
+				}
 				voice->SetMatrix(index, p.value.levels, p.count);
 				break;
 			case 6:
-				EXIT_NOT_IMPLEMENTED(p.type != 1);
+				if (p.type != 1) {
+					continue;
+				}
 				voice->SetVolume(index, p.value.f);
 				break;
 			case 7:
-				EXIT_NOT_IMPLEMENTED(p.type != 3);
+				if (p.type != 3) {
+					continue;
+				}
 				voice->SetPortMatrix(index, p.value.i);
 				break;
-			default: EXIT("unknown command: 0x%08" PRIx32 "\n", p.id);
+			default:
+				LOGF_COLOR(Log::Color::Yellow,
+				           "Ngs2VoiceRunCommands: ignoring unknown command 0x%08" PRIx32 "\n",
+				           p.id);
+				break;
 		}
 	}
 	return OK;
@@ -3218,8 +3286,12 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
                                     size_t state_size) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(state == nullptr);
-	EXIT_NOT_IMPLEMENTED(voice_handle == 0);
+	if (voice_handle == 0) {
+		return NGS2_ERROR_INVALID_VOICE_HANDLE;
+	}
+	if (state == nullptr || state_size < sizeof(Ngs2VoiceState)) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
 
 	auto* voice = reinterpret_cast<Ngs2VoiceInternal*>(voice_handle);
 
@@ -3227,10 +3299,15 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
 
 	switch (voice->rack->type) {
 		case Ngs2RackType::Submixer: {
-			EXIT_NOT_IMPLEMENTED(state_size != sizeof(Ngs2SubmixerVoiceState));
-			auto* submixer                    = reinterpret_cast<Ngs2SubmixerVoiceState*>(state);
-			*submixer                         = {};
-			submixer->voice_state.state_flags = Ngs2GetStateFlags(voice);
+			std::memset(state, 0, state_size);
+			state->state_flags = Ngs2GetStateFlags(voice);
+			break;
+		}
+		case Ngs2RackType::Mastering:
+		case Ngs2RackType::Reverb:
+		case Ngs2RackType::CustomSubmixer: {
+			std::memset(state, 0, state_size);
+			state->state_flags = Ngs2GetStateFlags(voice);
 			break;
 		}
 		case Ngs2RackType::CustomMastering:
@@ -3238,13 +3315,11 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
 			const bool sampler = voice->rack->type == Ngs2RackType::CustomSampler;
 			const auto configured_size =
 			    voice->rack->option.custom_sampler.custom_rack_option.state_size;
-			EXIT_NOT_IMPLEMENTED(configured_size < (sampler ? sizeof(Ngs2CustomSamplerVoiceState)
-			                                                : sizeof(Ngs2CustomMasteringVoiceState)));
-			if (state_size < configured_size) {
+			if (configured_size != 0 && state_size < configured_size) {
 				return static_cast<int32_t>(0x804a8011u);
 			}
-			std::memset(state, 0, configured_size);
-			if (sampler) {
+			std::memset(state, 0, configured_size != 0 ? configured_size : state_size);
+			if (sampler && state_size >= sizeof(Ngs2CustomSamplerVoiceState)) {
 				Ngs2FillSamplerState(*voice, *reinterpret_cast<Ngs2CustomSamplerVoiceState*>(state));
 			} else {
 				state->state_flags = Ngs2GetStateFlags(voice);
@@ -3265,14 +3340,17 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
 				break;
 			}
 
-			auto* sampler                = reinterpret_cast<Ngs2SamplerVoiceState*>(state);
-			sampler->envelope_height     = 1.0f;
-			sampler->peak_height         = 0.0f;
-			sampler->reserved            = 0;
+			auto* sampler            = reinterpret_cast<Ngs2SamplerVoiceState*>(state);
+			sampler->envelope_height = 1.0f;
+			sampler->peak_height     = 0.0f;
+			sampler->reserved        = 0;
 			Ngs2FillSamplerState(*voice, *sampler);
 			break;
 		}
-		default: EXIT("unknown type: %s\n", magic_enum::enum_name(voice->rack->type));
+		default:
+			std::memset(state, 0, state_size);
+			state->state_flags = Ngs2GetStateFlags(voice);
+			break;
 	}
 
 	return OK;
@@ -3281,8 +3359,12 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
 int KYTY_SYSV_ABI Ngs2VoiceGetStateFlags(uintptr_t voice_handle, uint32_t* state_flags) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(state_flags == nullptr);
-	EXIT_NOT_IMPLEMENTED(voice_handle == 0);
+	if (voice_handle == 0) {
+		return NGS2_ERROR_INVALID_VOICE_HANDLE;
+	}
+	if (state_flags == nullptr) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
 
 	auto* voice = reinterpret_cast<Ngs2VoiceInternal*>(voice_handle);
 
@@ -3300,8 +3382,19 @@ int KYTY_SYSV_ABI Ngs2VoiceQueryInfo(uintptr_t voice_handle, uint32_t query_id, 
 	struct SetupInfo {
 		uint32_t channels, flags;
 	};
-	EXIT_NOT_IMPLEMENTED(voice_handle == 0 || info == nullptr);
-	EXIT_NOT_IMPLEMENTED(query_id != 0x4001 || info_size != sizeof(SetupInfo));
+	if (voice_handle == 0) {
+		return NGS2_ERROR_INVALID_VOICE_HANDLE;
+	}
+	if (info == nullptr || info_size == 0) {
+		return NGS2_ERROR_INVALID_PARAM_LIST;
+	}
+	if (query_id != 0x4001 || info_size < sizeof(SetupInfo)) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "Ngs2VoiceQueryInfo: zero-filling unsupported query_id=0x%x (size=%zu)\n",
+		           query_id, info_size);
+		std::memset(info, 0, info_size);
+		return OK;
+	}
 
 	auto* voice = reinterpret_cast<Ngs2VoiceInternal*>(voice_handle);
 
@@ -3322,13 +3415,20 @@ int KYTY_SYSV_ABI Ngs2VoiceGetPortInfo(uintptr_t voice_handle, uint32_t port, vo
 		uint32_t  delay_samples, input;
 		uintptr_t dest;
 	};
-	EXIT_NOT_IMPLEMENTED(voice_handle == 0 || info == nullptr || info_size != sizeof(PortInfo));
+	if (voice_handle == 0) {
+		return NGS2_ERROR_INVALID_VOICE_HANDLE;
+	}
+	if (info == nullptr || info_size < sizeof(PortInfo)) {
+		return NGS2_ERROR_INVALID_PARAM_LIST;
+	}
 
 	auto* voice = reinterpret_cast<Ngs2VoiceInternal*>(voice_handle);
 
 	Common::LockGuard lock(voice->rack->ngs->mutex);
 
-	EXIT_NOT_IMPLEMENTED(port >= voice->ports.size());
+	if (port >= voice->ports.size()) {
+		return NGS2_ERROR_INVALID_PARAM_LIST;
+	}
 	const auto& p = voice->ports[port];
 
 	*static_cast<PortInfo*>(info) = {p.matrix, p.volume, 0, p.input,

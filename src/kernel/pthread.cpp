@@ -1576,7 +1576,9 @@ static void DestructPthreadSpecific() {
 int KYTY_SYSV_ABI PthreadMutexattrInit(PthreadMutexattr* attr) {
 	// PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(attr == nullptr);
+	if (attr == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	*attr = new PthreadMutexattrPrivate {};
 
@@ -1595,7 +1597,9 @@ int KYTY_SYSV_ABI PthreadMutexattrInit(PthreadMutexattr* attr) {
 int KYTY_SYSV_ABI PthreadMutexattrDestroy(PthreadMutexattr* attr) {
 	// PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(attr == nullptr || *attr == nullptr);
+	if (attr == nullptr || *attr == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	int result = pthread_mutexattr_destroy(&(*attr)->p);
 
@@ -1612,7 +1616,9 @@ int KYTY_SYSV_ABI PthreadMutexattrDestroy(PthreadMutexattr* attr) {
 int KYTY_SYSV_ABI PthreadMutexattrSettype(PthreadMutexattr* attr, int type) {
 	// PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(attr == nullptr || *attr == nullptr);
+	if (attr == nullptr || *attr == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	int ptype = PTHREAD_MUTEX_DEFAULT;
 	switch (type) {
@@ -1637,14 +1643,16 @@ int KYTY_SYSV_ABI PthreadMutexattrSetprotocol([[maybe_unused]] PthreadMutexattr*
                                               int                                protocol) {
 	// PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(attr == nullptr || *attr == nullptr);
+	if (attr == nullptr || *attr == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	[[maybe_unused]] int pprotocol = PTHREAD_PRIO_NONE;
 	switch (protocol) {
 		case 0: pprotocol = PTHREAD_PRIO_NONE; break;
 		case 1: pprotocol = PTHREAD_PRIO_INHERIT; break;
 		case 2: pprotocol = PTHREAD_PRIO_PROTECT; break;
-		default: EXIT("invalid protocol: %d\n", protocol);
+		default: return KERNEL_ERROR_EINVAL;
 	}
 
 	// protocol doesn't work in winpthreads
@@ -1752,11 +1760,9 @@ int KYTY_SYSV_ABI PthreadMutexLock(PthreadMutex* mutex) {
 	mutex = static_cast<PthreadMutex*>(
 	    pthread_static_objects->CreateObject(mutex, PthreadStaticObject::Type::Mutex));
 
-	if (mutex == nullptr) {
+	if (mutex == nullptr || *mutex == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
-
-	EXIT_NOT_IMPLEMENTED(*mutex == nullptr);
 
 	int result = NativeMutexLock(*mutex, nullptr);
 
@@ -1779,11 +1785,9 @@ int KYTY_SYSV_ABI PthreadMutexTrylock(PthreadMutex* mutex) {
 	mutex = static_cast<PthreadMutex*>(
 	    pthread_static_objects->CreateObject(mutex, PthreadStaticObject::Type::Mutex));
 
-	if (mutex == nullptr) {
+	if (mutex == nullptr || *mutex == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
-
-	EXIT_NOT_IMPLEMENTED(*mutex == nullptr);
 
 	int result = NativeMutexTrylock(*mutex);
 
@@ -1806,11 +1810,9 @@ int KYTY_SYSV_ABI PthreadMutexTimedlock(PthreadMutex* mutex, KernelUseconds usec
 	mutex = static_cast<PthreadMutex*>(
 	    pthread_static_objects->CreateObject(mutex, PthreadStaticObject::Type::Mutex));
 
-	if (mutex == nullptr) {
+	if (mutex == nullptr || *mutex == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
-
-	EXIT_NOT_IMPLEMENTED(*mutex == nullptr);
 
 	int result = NativeMutexLock(*mutex, &usec);
 
@@ -1832,11 +1834,9 @@ int KYTY_SYSV_ABI PthreadMutexUnlock(PthreadMutex* mutex) {
 	mutex = static_cast<PthreadMutex*>(
 	    pthread_static_objects->CreateObject(mutex, PthreadStaticObject::Type::Mutex));
 
-	if (mutex == nullptr) {
+	if (mutex == nullptr || *mutex == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
-
-	EXIT_NOT_IMPLEMENTED(*mutex == nullptr);
 
 	int result = NativeMutexUnlock(*mutex);
 
@@ -1945,7 +1945,7 @@ int KYTY_SYSV_ABI PthreadAttrGetdetachstate(const PthreadAttr* attr, int* state)
 	switch (*state) {
 		case PTHREAD_CREATE_JOINABLE: *state = 0; break;
 		case PTHREAD_CREATE_DETACHED: *state = 1; break;
-		default: EXIT("unknown state: %d\n", *state);
+		default: return KERNEL_ERROR_EINVAL;
 	}
 
 	if (result == 0) {
@@ -2009,7 +2009,7 @@ int KYTY_SYSV_ABI PthreadAttrGetschedpolicy(const PthreadAttr* attr, int* policy
 		case SCHED_OTHER: *policy = (*attr)->policy; break;
 		case SCHED_FIFO: *policy = 1; break;
 		case SCHED_RR: *policy = 3; break;
-		default: EXIT("unknown policy: %d\n", *policy);
+		default: return KERNEL_ERROR_EINVAL;
 	}
 
 	if (result == 0) {
@@ -2093,7 +2093,7 @@ int KYTY_SYSV_ABI PthreadAttrSetdetachstate(PthreadAttr* attr, int state) {
 	switch (state) {
 		case 0: pstate = PTHREAD_CREATE_JOINABLE; break;
 		case 1: pstate = PTHREAD_CREATE_DETACHED; break;
-		default: EXIT("unknown state: %d\n", state);
+		default: return KERNEL_ERROR_EINVAL;
 	}
 
 	// int result = pthread_attr_setdetachstate(&(*attr)->p, pstate);
@@ -2131,7 +2131,7 @@ int KYTY_SYSV_ABI PthreadAttrSetinheritsched(PthreadAttr* attr, int inherit_sche
 	switch (inherit_sched) {
 		case 0:
 		case 4: break;
-		default: EXIT("unknown inherit_sched: %d\n", inherit_sched);
+		default: return KERNEL_ERROR_EINVAL;
 	}
 
 	// Keep this in Kyty state. winpthreads' inheritsched support is not needed for guest-visible
@@ -2425,7 +2425,9 @@ int KYTY_SYSV_ABI PthreadRwlockRdlock(PthreadRwlock* rwlock) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	EXIT_NOT_IMPLEMENTED(*rwlock == nullptr);
+	if (*rwlock == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	return RwlockLockCooperative(*rwlock, false, nullptr);
 }
@@ -2442,7 +2444,9 @@ int KYTY_SYSV_ABI PthreadRwlockTimedrdlock(PthreadRwlock* rwlock, KernelUseconds
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	EXIT_NOT_IMPLEMENTED(*rwlock == nullptr);
+	if (*rwlock == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	return RwlockLockCooperative(*rwlock, false, &usec);
 }
@@ -2459,7 +2463,9 @@ int KYTY_SYSV_ABI PthreadRwlockTimedwrlock(PthreadRwlock* rwlock, KernelUseconds
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	EXIT_NOT_IMPLEMENTED(*rwlock == nullptr);
+	if (*rwlock == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	return RwlockLockCooperative(*rwlock, true, &usec);
 }
@@ -2476,7 +2482,9 @@ int KYTY_SYSV_ABI PthreadRwlockTryrdlock(PthreadRwlock* rwlock) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	EXIT_NOT_IMPLEMENTED(*rwlock == nullptr);
+	if (*rwlock == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	auto* self = g_pthread_self;
 	if (self == nullptr) {
@@ -2503,7 +2511,9 @@ int KYTY_SYSV_ABI PthreadRwlockTrywrlock(PthreadRwlock* rwlock) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	EXIT_NOT_IMPLEMENTED(*rwlock == nullptr);
+	if (*rwlock == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	auto* self = g_pthread_self;
 	if (self == nullptr) {
@@ -2537,7 +2547,9 @@ int KYTY_SYSV_ABI PthreadRwlockUnlock(PthreadRwlock* rwlock) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	EXIT_NOT_IMPLEMENTED(*rwlock == nullptr);
+	if (*rwlock == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	auto* self = g_pthread_self;
 	if (self == nullptr) {
@@ -2576,7 +2588,9 @@ int KYTY_SYSV_ABI PthreadRwlockWrlock(PthreadRwlock* rwlock) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	EXIT_NOT_IMPLEMENTED(*rwlock == nullptr);
+	if (*rwlock == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	return RwlockLockCooperative(*rwlock, true, nullptr);
 }
@@ -2738,11 +2752,9 @@ int KYTY_SYSV_ABI PthreadCondBroadcast(PthreadCond* cond) {
 int KYTY_SYSV_ABI PthreadCondDestroy(PthreadCond* cond) {
 	PRINT_NAME();
 
-	if (cond == nullptr) {
+	if (cond == nullptr || *cond == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
-
-	EXIT_NOT_IMPLEMENTED(*cond == nullptr);
 
 	int result = 0;
 
@@ -3483,7 +3495,9 @@ int KYTY_SYSV_ABI PthreadGetprio(Pthread thread, int* prio) {
 		return KERNEL_ERROR_ESRCH;
 	}
 
-	EXIT_NOT_IMPLEMENTED(prio == nullptr);
+	if (prio == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	if (thread->free) {
 		return KERNEL_ERROR_ESRCH;

@@ -4,11 +4,16 @@
 #include "common/debugCounters.h"
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 
 namespace Config {
 
-static std::unique_ptr<ConfigOptions> g_config;
+static std::unique_ptr<ConfigOptions>  g_config;
+static std::atomic<uint8_t>            g_present_upscaler {0};
+static std::atomic<float>              g_upscaler_sharpness {0.6f};
+static std::atomic<float>              g_resolution_scale {1.0f};
+static std::atomic<uint32_t>           g_fps_cap {0};
 
 void Initialize() {
 	EXIT_IF(g_config != nullptr);
@@ -29,6 +34,12 @@ void Load(const ConfigOptions& cfg) {
 	EXIT_IF(cfg.keyboard_player > static_cast<uint32_t>(MAX_PLAYERS));
 
 	*g_config = cfg;
+	g_present_upscaler.store(static_cast<uint8_t>(cfg.present_upscaler), std::memory_order_relaxed);
+	g_upscaler_sharpness.store(std::clamp(cfg.upscaler_sharpness, 0.0f, 1.0f),
+	                           std::memory_order_relaxed);
+	g_resolution_scale.store(std::clamp(cfg.resolution_scale, 1.0f, 2.0f),
+	                         std::memory_order_relaxed);
+	g_fps_cap.store(cfg.fps_cap, std::memory_order_relaxed);
 	Common::DebugCounters::SetEnabled(cfg.perf_overlay_enabled);
 }
 
@@ -231,6 +242,43 @@ bool SyncRawImageBuffersEnabled() {
 
 uint32_t GetFlushDraws() {
 	return g_config->flush_draws;
+}
+
+uint32_t GetGuestMemoryBudgetMb() {
+	return g_config != nullptr ? g_config->guest_memory_mb : 0u;
+}
+
+PresentUpscalerMode GetPresentUpscalerMode() noexcept {
+	return static_cast<PresentUpscalerMode>(g_present_upscaler.load(std::memory_order_relaxed));
+}
+
+void SetPresentUpscalerMode(PresentUpscalerMode mode) noexcept {
+	g_present_upscaler.store(static_cast<uint8_t>(mode), std::memory_order_relaxed);
+}
+
+float GetUpscalerSharpness() noexcept {
+	return g_upscaler_sharpness.load(std::memory_order_relaxed);
+}
+
+void SetUpscalerSharpness(float sharpness) noexcept {
+	g_upscaler_sharpness.store(std::clamp(sharpness, 0.0f, 1.0f), std::memory_order_relaxed);
+}
+
+float GetResolutionScale() noexcept {
+	return g_resolution_scale.load(std::memory_order_relaxed);
+}
+
+void SetResolutionScale(float scale) noexcept {
+	g_resolution_scale.store(std::clamp(scale, 1.0f, 2.0f), std::memory_order_relaxed);
+}
+
+uint32_t GetFpsCap() noexcept {
+	return g_fps_cap.load(std::memory_order_relaxed);
+}
+
+const std::vector<std::string>& GetEnabledPatches() {
+	static const std::vector<std::string> empty;
+	return g_config != nullptr ? g_config->enabled_patches : empty;
 }
 
 bool TessellationEnabled() {

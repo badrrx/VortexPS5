@@ -171,10 +171,11 @@ void Translator::EmitControlNop() {
 
 void Translator::S_WAITCNT_VSCNT(const Decoder::Instruction& inst) {
 	const auto count = inst.src1.value & 63u;
-	if (inst.src0.kind != Decoder::OperandKind::Null || (count != 0u && count != 63u)) {
-		EXIT("unsupported partial or register-based S_WAITCNT_VSCNT at 0x%08x", inst.pc);
+	// Partial waits (count = 1..62) are emitted by psslc for pipelined store scheduling;
+	// conservatively emit StoreCompletion whenever count < 63 so Vulkan memory ordering holds.
+	if (inst.src0.kind != Decoder::OperandKind::Null || count < 63u) {
+		ir.Emit(IR::ValueOpcode::StoreCompletion);
 	}
-	if (count == 0u) ir.Emit(IR::ValueOpcode::StoreCompletion);
 }
 
 void Translator::S_BARRIER() {
@@ -182,8 +183,7 @@ void Translator::S_BARRIER() {
 }
 
 void Translator::S_SENDMSG(const Decoder::Instruction& inst) {
-	if (program.stage == ShaderType::Mesh) {
-		EXIT_NOT_IMPLEMENTED(inst.src0.value != 9u); // MSG_GS_ALLOC_REQ
+	if (program.stage == ShaderType::Mesh && (inst.src0.value & 0xfu) == 9u) {
 		ir.Emit(IR::ValueOpcode::MeshAllocate, {ir.GetM0()});
 	} else {
 		ir.Emit(IR::ValueOpcode::Sendmsg);
@@ -434,6 +434,32 @@ void Translator::V_MOVRELD_B32(const Decoder::Instruction& inst) {
 		const auto match = ir.IEqual(m0, IR::U32(IR::Value(index - base)));
 		const auto write = ir.LogicalAnd(ir.GetExec(), match);
 		ir.SetVectorReg(reg, ir.Select(write, value, ir.GetVectorReg(reg)));
+	}
+}
+
+void Translator::V_MOVRELSD_B32(const Decoder::Instruction& inst) {
+	if (inst.dst.kind != Decoder::OperandKind::Vgpr ||
+	    inst.src0.kind != Decoder::OperandKind::Vgpr) {
+		EXIT("V_MOVRELSD_B32 requires VGPR source and destination at pc 0x%08x", inst.pc);
+	}
+	const auto m0 = ir.BitwiseAnd(ReadU32(ConditionOperand(Decoder::OperandKind::M0)),
+	                              IR::U32(IR::Value(0xffu)));
+	const auto src_base = inst.src0.reg;
+	auto       selected = ir.GetVectorReg(static_cast<IR::VectorReg>(src_base));
+	for (uint32_t index = src_base + 1u; index < current_vector_limit; index++) {
+		const auto match = ir.IEqual(m0, IR::U32(IR::Value(index - src_base)));
+		selected = ir.Select(match, ir.GetVectorReg(static_cast<IR::VectorReg>(index)), selected);
+	}
+	const auto dst_base = inst.dst.reg;
+	for (uint32_t index = dst_base; index < current_vector_limit; index++) {
+		const auto [first_write, last_read] = lane_spills[index];
+		if (index != dst_base && first_write < current_pc && current_pc < last_read) {
+			break;
+		}
+		const auto reg   = static_cast<IR::VectorReg>(index);
+		const auto match = ir.IEqual(m0, IR::U32(IR::Value(index - dst_base)));
+		const auto write = ir.LogicalAnd(ir.GetExec(), match);
+		ir.SetVectorReg(reg, ir.Select(write, selected, ir.GetVectorReg(reg)));
 	}
 }
 

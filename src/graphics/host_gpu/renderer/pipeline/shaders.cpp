@@ -46,7 +46,10 @@ static vk::BlendFactor GetBlendFactor(uint32_t factor) {
 		case Prospero::BlendFactor::kConstantAlpha: return vk::BlendFactor::eConstantAlpha;
 		case Prospero::BlendFactor::kOneMinusConstantAlpha:
 			return vk::BlendFactor::eOneMinusConstantAlpha;
-		default: EXIT("unknown factor: %u\n", factor);
+		default:
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Pipeline: unknown blend factor %u — falling back to eZero\n", factor);
+			return vk::BlendFactor::eZero;
 	}
 	return vk::BlendFactor::eZero;
 }
@@ -58,7 +61,10 @@ static vk::BlendOp GetBlendOp(uint32_t op) {
 		case Prospero::BlendOp::kMin: return vk::BlendOp::eMin;
 		case Prospero::BlendOp::kMax: return vk::BlendOp::eMax;
 		case Prospero::BlendOp::kReverseSubtract: return vk::BlendOp::eReverseSubtract;
-		default: EXIT("unknown op: %u\n", op);
+		default:
+			LOGF_COLOR(Log::Color::Yellow, "Pipeline: unknown blend op %u — falling back to eAdd\n",
+			           op);
+			return vk::BlendOp::eAdd;
 	}
 	return vk::BlendOp::eAdd;
 }
@@ -257,9 +263,17 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	vk::PipelineColorBlendAttachmentState color_blend_attachment[RENDER_COLOR_ATTACHMENTS_MAX] = {};
 	for (uint32_t i = 0; i < rendering.color_count; i++) {
-		EXIT_NOT_IMPLEMENTED((static_params.color_mask[i] & ~0x0fu) != 0);
+		if ((static_params.color_mask[i] & ~0x0fu) != 0) {
+			static bool logged_mask = false;
+			if (!logged_mask) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "Pipeline: masking extended color write mask 0x%x to 0x%x\n",
+				           static_params.color_mask[i], static_params.color_mask[i] & 0x0fu);
+				logged_mask = true;
+			}
+		}
 		color_blend_attachment[i].colorWriteMask =
-		    vk::ColorComponentFlags {static_params.color_mask[i]};
+		    vk::ColorComponentFlags {static_params.color_mask[i] & 0x0fu};
 		color_blend_attachment[i].blendEnable = static_params.blend_enable[i] ? VK_TRUE : VK_FALSE;
 		color_blend_attachment[i].srcColorBlendFactor =
 		    GetBlendFactor(static_params.color_srcblend[i]);
@@ -324,6 +338,12 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 #endif
 	if (graphics.attachment_feedback_loop_enabled) {
 		dynamic_states.push_back(vk::DynamicState::eAttachmentFeedbackLoopEnableEXT);
+	}
+	if (graphics.eds3_polygon_mode) {
+		dynamic_states.push_back(vk::DynamicState::ePolygonModeEXT);
+	}
+	if (graphics.eds3_depth_clip_enable) {
+		dynamic_states.push_back(vk::DynamicState::eDepthClipEnableEXT);
 	}
 
 	vk::PipelineDynamicStateCreateInfo dynamic_state {};

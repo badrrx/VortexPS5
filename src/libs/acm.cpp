@@ -35,10 +35,14 @@ static void acm_advance_batch(AcmBatchInfo* info, size_t bytes) {
 	info->offset = std::min(info->buffer_size, info->offset + bytes);
 }
 
+constexpr int ACM_ERROR_INVALID_PARAM = static_cast<int>(0x80260401u);
+
 int KYTY_SYSV_ABI AcmContextCreate(AcmContextId* context) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(context == nullptr);
+	if (context == nullptr) {
+		return ACM_ERROR_INVALID_PARAM;
+	}
 
 	*context = g_acm_next_context.fetch_add(1, std::memory_order_relaxed);
 
@@ -58,7 +62,9 @@ int KYTY_SYSV_ABI AcmBatchStartBuffer(AcmContextId context, const void* batch_co
                                       AcmBatchId* batch) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(batch == nullptr);
+	if (batch == nullptr) {
+		return ACM_ERROR_INVALID_PARAM;
+	}
 
 	if (batch_error != nullptr) {
 		std::memset(batch_error, 0, sizeof(AcmBatchError));
@@ -74,8 +80,9 @@ int KYTY_SYSV_ABI AcmBatchStartBuffers(AcmContextId context, uint32_t batch_info
                                        AcmBatchError* batch_error, AcmBatchId* batch) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(batch_info_count != 0 && batch_info == nullptr);
-	EXIT_NOT_IMPLEMENTED(batch == nullptr);
+	if ((batch_info_count != 0 && batch_info == nullptr) || batch == nullptr) {
+		return ACM_ERROR_INVALID_PARAM;
+	}
 
 	if (batch_error != nullptr) {
 		std::memset(batch_error, 0, sizeof(AcmBatchError));

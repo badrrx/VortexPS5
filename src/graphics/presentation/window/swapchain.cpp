@@ -13,6 +13,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/presentation/openxrHeadset.h"
 #include "graphics/presentation/performanceOverlay.h"
+#include "graphics/presentation/presentUpscaler.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
@@ -278,7 +279,8 @@ private:
 	std::vector<vk::Semaphore>     m_image_acquired;
 	std::vector<uint64_t>          m_image_acquired_ticks;
 	std::vector<vk::Semaphore>     m_render_complete;
-	std::unique_ptr<SystemOverlay> m_system_overlay;
+	std::unique_ptr<SystemOverlay>   m_system_overlay;
+	std::unique_ptr<PresentUpscaler> m_present_upscaler;
 	vk::DescriptorSetLayout        m_overlay_descriptors = nullptr;
 	vk::PipelineLayout             m_overlay_layout      = nullptr;
 	vk::Pipeline                   m_overlay_pipeline    = nullptr;
@@ -510,6 +512,10 @@ void Swapchain::Destroy() {
 	}
 	if (m_system_overlay != nullptr) {
 		m_system_overlay->ReleaseVulkan();
+	}
+	if (m_present_upscaler != nullptr) {
+		m_present_upscaler->Release();
+		m_present_upscaler.reset();
 	}
 	graphics.device.destroyPipeline(m_overlay_pipeline, nullptr);
 	graphics.device.destroyPipelineLayout(m_overlay_layout, nullptr);
@@ -759,13 +765,14 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	const bool convert_source =
 	    source != nullptr && VideoOutSourceNeedsDraw(source->source_flags, m_hdr_active);
 	const bool blit_source     = source != nullptr && !convert_source;
+	const bool use_upscaler    = blit_source && PresentUpscaler::IsActive();
 	const bool draw_overlay    = overlay.frame != nullptr;
 	const bool draw_attachment = convert_source || draw_overlay || draw_system_overlay;
-	if (blit_source) {
+	if (blit_source && !use_upscaler) {
 		source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal,
 		                vk::AccessFlagBits2::eTransferRead);
 	}
-	if (convert_source) {
+	if (convert_source || use_upscaler) {
 		source->Transit(vk_command, vk::ImageLayout::eShaderReadOnlyOptimal,
 		                vk::AccessFlagBits2::eShaderRead);
 	}
@@ -811,13 +818,43 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		}
 	}
 	if (blit_source) {
+		vk::Image    src_img = source->image.image;
+		vk::Extent2D src_ext {source->image.extent.width, source->image.extent.height};
+
+		if (use_upscaler) {
+			if (source->view == nullptr) {
+				vk::ImageViewCreateInfo view {};
+				view.image            = source->image.image;
+				view.viewType         = vk::ImageViewType::e2D;
+				view.format           = source->image.format;
+				view.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+				RequireVulkanSuccess(
+				    m_window.graphic_ctx.device.createImageView(&view, nullptr, &source->view),
+				    "create upscaler source image view");
+			}
+			if (m_present_upscaler == nullptr) {
+				m_present_upscaler = std::make_unique<PresentUpscaler>(m_window.graphic_ctx);
+			}
+			const auto upscaled = m_present_upscaler->Dispatch(
+			    vk_command, source->view, src_ext, game_rect.extent,
+			    Config::GetPresentUpscalerMode(), Config::GetUpscalerSharpness(),
+			    Config::GetResolutionScale());
+			if (upscaled != nullptr) {
+				src_img = upscaled;
+				src_ext = m_present_upscaler->OutputExtent();
+			} else {
+				source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal,
+				                vk::AccessFlagBits2::eTransferRead);
+			}
+		}
+
 		vk::ImageBlit region {};
 		region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.srcSubresource.mipLevel       = 0;
 		region.srcSubresource.baseArrayLayer = 0;
 		region.srcSubresource.layerCount     = 1;
-		region.srcOffsets[1].x               = static_cast<int>(source->image.extent.width);
-		region.srcOffsets[1].y               = static_cast<int>(source->image.extent.height);
+		region.srcOffsets[1].x               = static_cast<int>(src_ext.width);
+		region.srcOffsets[1].y               = static_cast<int>(src_ext.height);
 		region.srcOffsets[1].z               = 1;
 		region.dstSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.dstSubresource.mipLevel       = 0;
@@ -828,7 +865,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		region.dstOffsets[1].x = game_rect.offset.x + static_cast<int>(game_rect.extent.width);
 		region.dstOffsets[1].y = game_rect.offset.y + static_cast<int>(game_rect.extent.height);
 		region.dstOffsets[1].z               = 1;
-		vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
+		vk_command.blitImage(src_img, vk::ImageLayout::eTransferSrcOptimal,
 		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
 		                     &region, vk::Filter::eLinear);
 	}

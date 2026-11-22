@@ -49,7 +49,11 @@ static int LoadModule(uint16_t id) {
 		if (module.id != id) continue;
 		handle = LibKernel::KernelLoadStartModule(module.path, 0, nullptr, 0, nullptr, nullptr);
 		if (handle < 0) {
-			return handle;
+			LOGF_COLOR(Log::Color::Yellow,
+			           "\t Sysmodule: optional native module 0x%04x (%s) unavailable (err=0x%08x)"
+			           " — falling back to HLE stub\n",
+			           static_cast<unsigned>(id), module.path, static_cast<uint32_t>(handle));
+			handle = -1;
 		}
 		break;
 	}
@@ -62,18 +66,18 @@ static KYTY_SYSV_ABI int SysmoduleGetModuleInfoForUnwind(uint64_t addr, int flag
 	return LibKernel::KernelGetModuleInfoForUnwind(addr, flags, info);
 }
 
-static KYTY_SYSV_ABI int SysmoduleLoadModule(uint16_t id) {
+KYTY_SYSV_ABI int SysmoduleLoadModule(uint16_t id) {
 	PRINT_NAME();
 
-	LOGF("\t id = %d\n", static_cast<int>(id));
+	LOGF("\t id = 0x%04x\n", static_cast<unsigned>(id));
 
 	return LoadModule(id);
 }
 
-static KYTY_SYSV_ABI int SysmoduleUnloadModule(uint16_t id) {
+KYTY_SYSV_ABI int SysmoduleUnloadModule(uint16_t id) {
 	PRINT_NAME();
 
-	LOGF("\t id = %d\n", static_cast<int>(id));
+	LOGF("\t id = 0x%04x\n", static_cast<unsigned>(id));
 
 	std::scoped_lock lock(g_module_mutex);
 	const auto       module = g_modules.find(id);
@@ -93,25 +97,30 @@ static KYTY_SYSV_ABI int SysmoduleUnloadModule(uint16_t id) {
 	return 0;
 }
 
-static KYTY_SYSV_ABI int SysmoduleLoadModuleInternalWithArg(uint16_t id, int arg1, int arg2,
-                                                            int arg3, int* ret) {
+KYTY_SYSV_ABI int SysmoduleLoadModuleInternalWithArg(uint16_t id, int arg1, int arg2, int arg3,
+                                                     int* ret) {
 	PRINT_NAME();
 
-	LOGF("\t id = %d\n", static_cast<int>(id));
+	LOGF("\t id = 0x%04x, arg1 = %d, arg2 = %d, arg3 = %d\n", static_cast<unsigned>(id), arg1, arg2,
+	     arg3);
 
-	EXIT_IF(arg1 != 0);
-	EXIT_IF(arg2 != 0);
-	EXIT_IF(arg3 != 0);
-	EXIT_IF(ret == nullptr);
+	if (arg1 != 0 || arg2 != 0 || arg3 != 0) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "\t SysmoduleLoadModuleInternalWithArg: accepting non-zero args for id=0x%04x\n",
+		           static_cast<unsigned>(id));
+	}
 
-	*ret = LoadModule(id);
-	return *ret;
+	const int result = LoadModule(id);
+	if (ret != nullptr) {
+		*ret = result;
+	}
+	return result;
 }
 
-static KYTY_SYSV_ABI int SysmoduleIsLoaded(uint16_t id) {
+KYTY_SYSV_ABI int SysmoduleIsLoaded(uint16_t id) {
 	PRINT_NAME();
 
-	LOGF("\t id = %d\n", static_cast<int>(id));
+	LOGF("\t id = 0x%04x\n", static_cast<unsigned>(id));
 
 	std::scoped_lock lock(g_module_mutex);
 	return g_modules.contains(id) ? 0 : SYSMODULE_ERROR_UNLOADED;
